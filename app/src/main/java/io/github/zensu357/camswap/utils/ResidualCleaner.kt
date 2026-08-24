@@ -1,4 +1,4 @@
-﻿package io.github.zensu357.camswap.utils
+package io.github.zensu357.camswap.utils
 
 import java.io.File
 
@@ -29,29 +29,48 @@ object ResidualCleaner {
     )
 
     /**
-     * 扫描系统中的残留路径与敏感配置
+     * 扫描系统中的残留路径与敏感配置（单次批量检测，绝不高频循环调用 su）
      */
-    fun scanResiduals(): List<ScanResult> {
+    fun scanResiduals(useRoot: Boolean = false): List<ScanResult> {
         val results = mutableListOf<ScanResult>()
 
+        // 1. 先通过 Java 本地直接探测可读路径
+        val unverifiedPaths = mutableListOf<Pair<String, String>>()
         for ((path, desc) in KNOWN_RISK_PATHS) {
-            var exists = false
-            var isDir = false
-
             try {
                 val file = File(path)
                 if (file.exists()) {
-                    exists = true
-                    isDir = file.isDirectory
-                } else {
-                    exists = checkExistsViaSu(path)
+                    results.add(ScanResult(path, desc, exists = true, isDirectory = file.isDirectory))
+                } else if (useRoot) {
+                    unverifiedPaths.add(path to desc)
                 }
-            } catch (e: Exception) {
-                LogUtil.log("【CS】【ResidualCleaner】扫描路径异常 $path: ${e.message}")
+            } catch (e: Throwable) {
+                if (useRoot) unverifiedPaths.add(path to desc)
             }
+        }
 
-            if (exists) {
-                results.add(ScanResult(path, desc, exists = true, isDirectory = isDir))
+        // 2. 如果开启了 Root 且有未确认路径，仅启动单次 su 批量检查
+        if (useRoot && unverifiedPaths.isNotEmpty()) {
+            try {
+                val checkScript = unverifiedPaths.joinToString("\n") { (path, _) ->
+                    "if [ -e '$path' ]; then echo '1:$path'; else echo '0:$path'; fi"
+                }
+                val process = Runtime.getRuntime().exec(arrayOf("su", "-c", checkScript))
+                process.inputStream.bufferedReader().useLines { lines ->
+                    for (line in lines) {
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("1:")) {
+                            val path = trimmed.substring(2)
+                            val desc = unverifiedPaths.firstOrNull { it.first == path }?.second ?: ""
+                            if (results.none { it.path == path }) {
+                                results.add(ScanResult(path, desc, exists = true, isDirectory = false))
+                            }
+                        }
+                    }
+                }
+                process.waitFor()
+            } catch (_: Throwable) {
+                // 忽略非 Root 或执行失败
             }
         }
 

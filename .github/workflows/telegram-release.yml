@@ -1,0 +1,60 @@
+name: Telegram Release Notification
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send release to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: "@CamSwap"
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import requests
+
+          bot_token = os.environ["BOT_TOKEN"]
+          chat_id = os.environ["CHAT_ID"]
+
+          name = os.environ["RELEASE_NAME"]
+          tag = os.environ["RELEASE_TAG"]
+          body = os.environ["RELEASE_BODY"]
+          url = os.environ["RELEASE_URL"]
+          repo = os.environ["REPO"]
+
+          message = f"""🚀 <b>New Push</b>
+
+📦 <b>{repo}</b>
+🏷️ <b>{name}</b>
+🔖 {tag}
+
+📝 <b>更新内容</b>
+
+{body}
+
+🔗 <a href="{url}">查看 GitHub Release</a>
+"""
+
+          response = requests.post(
+              f"https://api.telegram.org/bot{bot_token}/sendMessage",
+              data={
+                  "chat_id": chat_id,
+                  "text": message,
+                  "parse_mode": "HTML",
+                  "disable_web_page_preview": False
+              }
+          )
+
+          response.raise_for_status()
+          print("Telegram notification sent successfully.")
+          PY

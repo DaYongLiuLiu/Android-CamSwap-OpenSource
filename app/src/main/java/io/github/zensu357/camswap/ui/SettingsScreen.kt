@@ -79,14 +79,17 @@ fun SettingsScreen(viewModel: MainViewModel) {
     ) { uri: Uri? ->
         if (uri != null) {
             coroutineScope.launch {
-                Toast.makeText(context, "正在通过Root打包系统日志...", Toast.LENGTH_SHORT).show()
-                val success = io.github.zensu357.camswap.utils.LogExporter.exportLogsToUri(context, uri)
-                Toast.makeText(
-                    context,
-                    if (success) context.getString(R.string.settings_export_logs_success)
-                    else context.getString(R.string.settings_export_logs_failed),
-                    Toast.LENGTH_LONG
-                ).show()
+                try {
+                    Toast.makeText(context, "正在生成并打包系统诊断日志...", Toast.LENGTH_SHORT).show()
+                    val result = io.github.zensu357.camswap.utils.LogExporter.exportLogsToUri(context, uri)
+                    if (result.success) {
+                        Toast.makeText(context, context.getString(R.string.settings_export_logs_success), Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "日志导出失败: ${result.errorMessage ?: "未知错误"}", Toast.LENGTH_LONG).show()
+                    }
+                } catch (t: Throwable) {
+                    Toast.makeText(context, "导出异常: ${t.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -580,8 +583,12 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     title = stringResource(R.string.settings_export_logs),
                     subtitle = stringResource(R.string.settings_export_logs_desc),
                     onClick = {
-                        val timeStamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
-                        exportLogLauncher.launch("camswap_logs_$timeStamp.zip")
+                        try {
+                            val timeStamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
+                            exportLogLauncher.launch("camswap_logs_$timeStamp.zip")
+                        } catch (e: Throwable) {
+                            Toast.makeText(context, "无法唤起文件保存器: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
                     },
                     onLongClick = {
                         coroutineScope.launch {
