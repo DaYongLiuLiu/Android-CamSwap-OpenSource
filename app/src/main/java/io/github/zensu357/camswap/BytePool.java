@@ -1,36 +1,37 @@
 package io.github.zensu357.camswap;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.Map;
 
-public class BytePool {
-    private static final Map<Integer, Deque<byte[]>> pools = new HashMap<>();
-    private static final int MAX_POOL_SIZE = 5;
+public final class BytePool {
+    private static final Map<Integer, ConcurrentLinkedDeque<byte[]>> pools = new ConcurrentHashMap<>();
+    private static final int MAX_POOL_SIZE = 8;
 
-    public static synchronized byte[] acquire(int size) {
-        Deque<byte[]> pool = pools.get(size);
-        if (pool != null && !pool.isEmpty()) {
-            return pool.poll();
+    private BytePool() {}
+
+    public static byte[] acquire(int size) {
+        if (size <= 0) return new byte[0];
+        ConcurrentLinkedDeque<byte[]> pool = pools.get(size);
+        if (pool != null) {
+            byte[] buf = pool.poll();
+            if (buf != null) {
+                return buf;
+            }
         }
         return new byte[size];
     }
 
-    public static synchronized void release(byte[] buffer) {
-        if (buffer == null) return;
+    public static void release(byte[] buffer) {
+        if (buffer == null || buffer.length == 0) return;
         int size = buffer.length;
-        Deque<byte[]> pool = pools.get(size);
-        if (pool == null) {
-            pool = new ArrayDeque<>();
-            pools.put(size, pool);
-        }
+        ConcurrentLinkedDeque<byte[]> pool = pools.computeIfAbsent(size, k -> new ConcurrentLinkedDeque<>());
         if (pool.size() < MAX_POOL_SIZE) {
             pool.offer(buffer);
         }
     }
-    
-    public static synchronized void clear() {
+
+    public static void clear() {
         pools.clear();
     }
 }

@@ -147,7 +147,7 @@ public class PermissionHelper {
         File markerFile = new File(privateDir.getAbsolutePath() + "/Camera1/" + "has_shown");
         if ((!packageName.equals(BuildConfig.APPLICATION_ID)) && (!markerFile.exists())) {
             try {
-                showToast(context, packageName + "未授予读取本地目录权限，请检查权限\nCamera1目前重定向为 " + VideoManager.video_path);
+                showToast(context, packageName + "未授予读取本地目录权限，重定向为: " + VideoManager.video_path);
                 FileOutputStream fos = new FileOutputStream(markerFile);
                 String info = "shown";
                 fos.write(info.getBytes());

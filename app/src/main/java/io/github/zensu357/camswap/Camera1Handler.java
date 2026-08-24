@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import io.github.libxposed.api.XposedInterface;
 import io.github.zensu357.camswap.api101.Api101Runtime;
 
+import io.github.zensu357.camswap.utils.HookUtils;
 import io.github.zensu357.camswap.utils.VideoManager;
 import io.github.zensu357.camswap.utils.LogUtil;
 
@@ -549,22 +550,11 @@ public class Camera1Handler implements ICameraHandler {
 
     private static Method resolveMethod(ClassLoader classLoader, String methodName, Class<?>... parameterTypes)
             throws Exception {
-        Class<?> clazz = Class.forName("android.hardware.Camera", false, classLoader);
-        Class<?> current = clazz;
-        while (current != null) {
-            try {
-                Method method = current.getDeclaredMethod(methodName, parameterTypes);
-                method.setAccessible(true);
-                return method;
-            } catch (NoSuchMethodException ignored) {
-                current = current.getSuperclass();
-            }
-        }
-        throw new NoSuchMethodException("android.hardware.Camera#" + methodName);
+        return HookUtils.resolveMethod(classLoader, "android.hardware.Camera", methodName, parameterTypes);
     }
 
     private static Object[] toArgs(List<Object> args) {
-        return args.toArray(new Object[0]);
+        return HookUtils.toArgs(args);
     }
 
     /**
@@ -603,8 +593,7 @@ public class Camera1Handler implements ICameraHandler {
                                 .getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
                         if (HookMain.toast_content != null && HookMain.need_to_show_toast) {
                             try {
-                                HookMain.showToast("发现预览\n宽：" + HookMain.mwidth + "\n高："
-                                        + HookMain.mhight + "\n" + "需要视频分辨率与其完全相同");
+                                HookMain.showToast("宽: " + HookMain.mwidth + "px  高: " + HookMain.mhight + "px");
                             } catch (Exception ee) {
                                 LogUtil.log("【CS】[toast]" + ee.toString());
                             }

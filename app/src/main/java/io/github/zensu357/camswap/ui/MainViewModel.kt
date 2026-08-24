@@ -4,13 +4,16 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.widget.Toast
 import io.github.zensu357.camswap.ConfigManager
+import io.github.zensu357.camswap.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -39,13 +42,17 @@ data class MainUiState(
     val streamAutoReconnect: Boolean = true,
     val streamLocalFallback: Boolean = true,
     val streamTransportHint: String = "auto",
-    val streamTimeoutMs: Long = 8000L
+    val streamTimeoutMs: Long = 8000L,
+
+    // Injection Engine Mode
+    val injectionMode: String = ConfigManager.INJECTION_MODE_LSPOSED
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val configManager = ConfigManager()
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+    private var hasAutoInjectedStartup = false
 
     init {
         loadConfig()
@@ -55,6 +62,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun loadConfig() {
         viewModelScope.launch(Dispatchers.IO) {
             configManager.reload()
+            val currentMode = configManager.getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED)
+            
             _uiState.update { currentState ->
                 currentState.copy(
                     isModuleDisabled = configManager.getBoolean(ConfigManager.KEY_DISABLE_MODULE, false),
@@ -75,8 +84,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     streamAutoReconnect = configManager.getBoolean(ConfigManager.KEY_STREAM_AUTO_RECONNECT, true),
                     streamLocalFallback = configManager.getBoolean(ConfigManager.KEY_STREAM_LOCAL_FALLBACK, true),
                     streamTransportHint = configManager.getString(ConfigManager.KEY_STREAM_TRANSPORT_HINT, "auto"),
-                    streamTimeoutMs = configManager.getLong(ConfigManager.KEY_STREAM_TIMEOUT_MS, 8000L)
+                    streamTimeoutMs = configManager.getLong(ConfigManager.KEY_STREAM_TIMEOUT_MS, 8000L),
+                    injectionMode = currentMode
                 )
+            }
+
+            // 仅在应用启动首次，且已处于 Root 模式且未运行时尝试启动，避免 onResume 重复触发 Root 授权
+            if (currentMode == ConfigManager.INJECTION_MODE_CAMSERVER && !hasAutoInjectedStartup) {
+                hasAutoInjectedStartup = true
+                if (!io.github.zensu357.camswap.utils.CameraServerBridge.isRunning()) {
+                    try {
+                        io.github.zensu357.camswap.utils.CameraServerBridge.injectCameraServer(getApplication())
+                    } catch (e: Exception) {
+                        io.github.zensu357.camswap.utils.LogUtil.log("【CS】启动 Root 推流引擎异常: ${e.message}")
+                    }
+                }
             }
         }
     }
@@ -192,6 +214,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             configManager.setLong(ConfigManager.KEY_STREAM_TIMEOUT_MS, timeout)
             _uiState.update { it.copy(streamTimeoutMs = timeout) }
+        }
+    }
+
+    fun switchInjectionMode(context: Context, targetMode: String, onRootFailed: () -> Unit) {
+        if (targetMode == ConfigManager.INJECTION_MODE_CAMSERVER) {
+            viewModelScope.launch(Dispatchers.IO) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.requesting_root_permission),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+
+                val hasRoot = io.github.zensu357.camswap.utils.CameraServerBridge.requestRootPermission()
+                if (!hasRoot) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.root_permission_required),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        onRootFailed()
+                    }
+                    return@launch
+                }
+
+                setInjectionMode(ConfigManager.INJECTION_MODE_CAMSERVER)
+                val injectSuccess = io.github.zensu357.camswap.utils.CameraServerBridge.injectCameraServer(context)
+
+                withContext(Dispatchers.Main) {
+                    if (injectSuccess) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.root_mode_activated),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.root_inject_failed_tip),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        } else {
+            setInjectionMode(ConfigManager.INJECTION_MODE_LSPOSED)
+        }
+    }
+
+    fun setInjectionMode(mode: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val oldMode = _uiState.value.injectionMode
+            configManager.setString(ConfigManager.KEY_INJECTION_MODE, mode)
+            _uiState.update { it.copy(injectionMode = mode) }
+
+            io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】==================== 运行模式切换 ====================")
+            io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】模式状态变动: $oldMode -> $mode")
+            if (mode == ConfigManager.INJECTION_MODE_CAMSERVER) {
+                io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】当前生效模式: CameraServer 系统底层 Native Hook 模式 (全局生效/零沙箱特征)")
+                val pid = io.github.zensu357.camswap.utils.CameraServerBridge.getCameraServerPid()
+                val injected = io.github.zensu357.camswap.utils.CameraServerBridge.isHookInjected()
+                io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】系统 cameraserver PID: $pid | 注入状态: $injected")
+            } else {
+                io.github.zensu357.camswap.utils.CameraServerBridge.stopFrameFeeder()
+                io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】当前生效模式: LSPosed 沙箱 App 注入模式")
+                io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】Xposed 激活状态: ${_uiState.value.isXposedActive} | 目标包数量: ${_uiState.value.targetAppsCount}")
+            }
+            io.github.zensu357.camswap.utils.LogUtil.log("【CS】【ModeSwitch】======================================================")
         }
     }
 

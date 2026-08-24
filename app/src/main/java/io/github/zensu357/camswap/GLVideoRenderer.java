@@ -48,6 +48,8 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
     private int maTextureHandle;
     private int muSTMatrixHandle;
     private int muRotMatrixHandle;
+    private int muAmbientColorHandle;
+    private int muAmbientIntensityHandle;
 
     // Input/Output
     private SurfaceTexture mInputSurfaceTexture;
@@ -64,6 +66,7 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
     private boolean mInitialized = false;
     private volatile int mSurfaceWidth = 0;
     private volatile int mSurfaceHeight = 0;
+    private long mFrameCount = 0;
 
     // Thread
     private HandlerThread mGLThread;
@@ -228,6 +231,15 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         GLES20.glUniformMatrix4fv(muSTMatrixHandle, 1, false, mSTMatrix, 0);
         GLES20.glUniformMatrix4fv(muRotMatrixHandle, 1, false, mRotMatrix, 0);
 
+        float[] ambientColor = io.github.zensu357.camswap.utils.ScreenColorDetector.INSTANCE.getAmbientColor();
+        float ambientIntensity = io.github.zensu357.camswap.utils.ScreenColorDetector.INSTANCE.getAmbientIntensity();
+        if (muAmbientColorHandle >= 0) {
+            GLES20.glUniform3f(muAmbientColorHandle, ambientColor[0], ambientColor[1], ambientColor[2]);
+        }
+        if (muAmbientIntensityHandle >= 0) {
+            GLES20.glUniform1f(muAmbientIntensityHandle, ambientIntensity);
+        }
+
         mVertexBuffer.position(0);
         GLES20.glEnableVertexAttribArray(maPositionHandle);
         GLES20.glVertexAttribPointer(maPositionHandle, 2, GLES20.GL_FLOAT, false, 0, mVertexBuffer);
@@ -237,6 +249,11 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         GLES20.glVertexAttribPointer(maTextureHandle, 2, GLES20.GL_FLOAT, false, 0, mTexCoordBuffer);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+
+        mFrameCount++;
+        if (mFrameCount % 60 == 1) {
+            LogUtil.log("【CS】【GLRenderer】视频渲染工作中: Tag=" + mTag + " | 尺寸=" + mSurfaceWidth + "x" + mSurfaceHeight + " | 旋转=" + mRotationDegrees + "° | 反光强度=" + String.format("%.2f", ambientIntensity) + " | 累计已渲染帧=" + mFrameCount);
+        }
     }
 
     /**
@@ -389,6 +406,8 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
         maTextureHandle = GLES20.glGetAttribLocation(mProgram, "aTextureCoord");
         muSTMatrixHandle = GLES20.glGetUniformLocation(mProgram, "uSTMatrix");
         muRotMatrixHandle = GLES20.glGetUniformLocation(mProgram, "uRotMatrix");
+        muAmbientColorHandle = GLES20.glGetUniformLocation(mProgram, "uAmbientColor");
+        muAmbientIntensityHandle = GLES20.glGetUniformLocation(mProgram, "uAmbientIntensity");
 
         // Create external OES texture
         int[] textures = new int[1];

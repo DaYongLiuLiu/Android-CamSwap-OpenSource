@@ -58,6 +58,9 @@ public class ConfigManager {
     // Stream media source keys
     public static final String KEY_MEDIA_SOURCE_TYPE = "media_source_type";       // "local" | "stream"
     public static final String KEY_STREAM_URL = "stream_url";                     // rtsp://... etc.
+    public static final String KEY_INJECTION_MODE = "injection_mode";
+    public static final String INJECTION_MODE_LSPOSED = "lsposed";
+    public static final String INJECTION_MODE_CAMSERVER = "cameraserver";
     public static final String KEY_STREAM_AUTO_RECONNECT = "stream_auto_reconnect";
     public static final String KEY_STREAM_LOCAL_FALLBACK = "stream_enable_local_fallback";
     public static final String KEY_STREAM_TRANSPORT_HINT = "stream_transport_hint"; // "auto" | "tcp" | "udp"
@@ -267,53 +270,48 @@ public class ConfigManager {
             }
             intent.putExtra(IpcContract.EXTRA_CONFIG_JSON, getConfigSnapshot().toString());
 
-            if (getBoolean(KEY_FORCE_PRIVATE_DIR, false)) {
-                String videoName = getString(KEY_SELECTED_VIDEO, "Cam.mp4");
-                File videoFile = null;
-                if (videoName != null && !videoName.isEmpty()) {
-                    videoFile = new File(DEFAULT_CONFIG_DIR, videoName);
+            String videoName = getString(KEY_SELECTED_VIDEO, "Cam.mp4");
+            File videoFile = null;
+            if (videoName != null && !videoName.isEmpty()) {
+                videoFile = new File(DEFAULT_CONFIG_DIR, videoName);
+            }
+            if (videoFile == null || !videoFile.exists()) {
+                File[] files = new File(DEFAULT_CONFIG_DIR)
+                        .listFiles((dir, name) -> name.toLowerCase().endsWith(".mp4"));
+                if (files != null && files.length > 0) {
+                    videoFile = files[0];
                 }
-                if (videoFile == null || !videoFile.exists()) {
-                    File[] files = new File(DEFAULT_CONFIG_DIR)
-                            .listFiles((dir, name) -> name.toLowerCase().endsWith(".mp4"));
-                    if (files != null && files.length > 0) {
-                        videoFile = files[0];
-                    }
-                }
-                if (videoFile != null && !videoFile.exists()) {
-                    videoFile = new File(DEFAULT_CONFIG_DIR, "Cam.mp4");
-                }
-                if (videoFile != null && videoFile.exists()) {
-                    try {
-                        final File finalVideoFile = videoFile;
-                        android.os.Bundle bundle = new android.os.Bundle();
-                        // attach video binder for private dir copy
-                        bundle.putBinder(IpcContract.EXTRA_VIDEO_BINDER, new android.os.Binder() {
-                            @Override
-                            protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply,
-                                    int flags) throws android.os.RemoteException {
-                                // Binder transact request
-                                if (code == 1) { // 1 = Get FD
-                                    reply.writeNoException();
-                                    try {
-                                        android.os.ParcelFileDescriptor pfd = android.os.ParcelFileDescriptor
-                                                .open(finalVideoFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
-                                        reply.writeInt(1);
-                                        pfd.writeToParcel(reply, android.os.Parcelable.PARCELABLE_WRITE_RETURN_VALUE);
-                                        // PFD written to reply
-                                    } catch (Exception e) {
-                                        io.github.zensu357.camswap.utils.LogUtil.log("【CS】Binder PFD 失败: " + e);
-                                        reply.writeInt(0);
-                                    }
-                                    return true;
+            }
+            if (videoFile != null && !videoFile.exists()) {
+                videoFile = new File(DEFAULT_CONFIG_DIR, "Cam.mp4");
+            }
+            if (videoFile != null && videoFile.exists()) {
+                try {
+                    final File finalVideoFile = videoFile;
+                    android.os.Bundle bundle = new android.os.Bundle();
+                    bundle.putBinder(IpcContract.EXTRA_VIDEO_BINDER, new android.os.Binder() {
+                        @Override
+                        protected boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply,
+                                int flags) throws android.os.RemoteException {
+                            if (code == 1) { // 1 = Get FD
+                                reply.writeNoException();
+                                try {
+                                    android.os.ParcelFileDescriptor pfd = android.os.ParcelFileDescriptor
+                                            .open(finalVideoFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+                                    reply.writeInt(1);
+                                    pfd.writeToParcel(reply, android.os.Parcelable.PARCELABLE_WRITE_RETURN_VALUE);
+                                } catch (Exception e) {
+                                    io.github.zensu357.camswap.utils.LogUtil.log("【CS】Binder PFD 失败: " + e);
+                                    reply.writeInt(0);
                                 }
-                                return super.onTransact(code, data, reply, flags);
+                                return true;
                             }
-                        });
-                        intent.putExtra(IpcContract.EXTRA_VIDEO_BUNDLE, bundle);
-                    } catch (Exception e) {
-                        io.github.zensu357.camswap.utils.LogUtil.log("【CS】广播附加 video_bundle 失败: " + e);
-                    }
+                            return super.onTransact(code, data, reply, flags);
+                        }
+                    });
+                    intent.putExtra(IpcContract.EXTRA_VIDEO_BUNDLE, bundle);
+                } catch (Exception e) {
+                    io.github.zensu357.camswap.utils.LogUtil.log("【CS】广播附加 video_bundle 失败: " + e);
                 }
             }
 

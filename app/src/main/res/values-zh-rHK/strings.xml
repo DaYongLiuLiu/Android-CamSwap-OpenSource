@@ -13,4 +13,10 @@
     <string name="positive">確定</string>
     <string name="negative">拒絕</string>
     <string name="settings_title">設定</string>
+    <string name="settings_export_logs">輸出運行日誌</string>
+    <string name="settings_export_logs_desc">需要root | 長按清空日誌</string>
+    <string name="settings_export_logs_success">日誌已成功導出</string>
+    <string name="settings_export_logs_failed">日誌導出失敗，請檢查Root權限</string>
+    <string name="settings_clear_logs_success">日誌緩存已清空</string>
+    <string name="settings_clear_logs_failed">清空日誌失敗，請檢查Root權限</string>
 </resources>

@@ -90,30 +90,29 @@ public class VideoManager {
             return null;
         }
 
-        if (getConfig().getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false)) {
-            File privateFile = new File(toast_content.getFilesDir(), "vcam_private.mp4");
-            if (privateFile.exists()) {
-                try {
-                    return ParcelFileDescriptor.open(privateFile, ParcelFileDescriptor.MODE_READ_ONLY);
-                } catch (Exception e) {
-                    log("【CS】[Private] 打开私有视频 Fd 失败: " + e);
-                }
+        // 1. First check if we have a cached private video file in app's private filesDir
+        File privateFile = new File(toast_content.getFilesDir(), "vcam_private.mp4");
+        if (privateFile.exists() && privateFile.length() > 0 && privateFile.canRead()) {
+            try {
+                return ParcelFileDescriptor.open(privateFile, ParcelFileDescriptor.MODE_READ_ONLY);
+            } catch (Exception e) {
+                log("【CS】[Private] 打开私有视频 Fd 失败: " + e);
             }
         }
-        // directly.
 
+        // 2. Query ContentProvider directly (zero-copy native streaming descriptor)
         try {
             ParcelFileDescriptor pfd = toast_content.getContentResolver().openFileDescriptor(IpcContract.URI_VIDEO, "r");
             if (pfd != null) {
                 long now = android.os.SystemClock.elapsedRealtime();
                 if (now - lastPfdSuccessLogMs >= 5000L) {
                     lastPfdSuccessLogMs = now;
-                    log("【CS】getVideoPFD: 成功");
+                    log("【CS】getVideoPFD: ContentProvider 获取成功");
                 }
+                return pfd;
             } else {
-                log("【CS】getVideoPFD: 返回 null");
+                log("【CS】getVideoPFD: ContentProvider 返回 null");
             }
-            return pfd;
         } catch (Exception e) {
             long now = android.os.SystemClock.elapsedRealtime();
             if (now - lastPfdFailLogMs >= 5000L) {
@@ -121,6 +120,18 @@ public class VideoManager {
                 log("【CS】getVideoPFD 失败: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
         }
+
+        // 3. Fallback: try opening direct file if permission allows
+        try {
+            String path = getCurrentVideoPath();
+            if (path != null) {
+                File f = new File(path);
+                if (f.exists() && f.canRead()) {
+                    return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
+                }
+            }
+        } catch (Exception ignored) {}
+
         return null;
     }
 
@@ -226,17 +237,29 @@ public class VideoManager {
     }
 
     public static void checkProviderAvailability() {
-        ParcelFileDescriptor pfd = getVideoPFD();
-        if (pfd != null) {
-            providerAvailable = true;
-            try {
-                pfd.close();
-            } catch (Exception e) {
-                log("【CS】Error closing PFD check: " + e);
-            }
-        } else {
+        if (toast_content == null) {
             providerAvailable = false;
+            return;
         }
+        try {
+            android.net.Uri uri = IpcContract.URI_CONFIG;
+            String type = toast_content.getContentResolver().getType(uri);
+            if (type != null) {
+                providerAvailable = true;
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            ParcelFileDescriptor pfd = toast_content.getContentResolver().openFileDescriptor(IpcContract.URI_VIDEO, "r");
+            if (pfd != null) {
+                providerAvailable = true;
+                pfd.close();
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        providerAvailable = false;
     }
 
     public static boolean isProviderAvailable() {
@@ -353,20 +376,29 @@ public class VideoManager {
      */
     private static String findFallbackVideo(File camFile) {
         // 尝试 Cam.mp4
-        if (camFile.exists()) {
+        if (camFile.exists() && camFile.canRead()) {
             log("【CS】[Video] 使用默认路径: " + camFile.getAbsolutePath());
             return camFile.getAbsolutePath();
         }
 
         // 扫描目录中任意视频
         File[] files = listVideoFiles(new File(video_path));
-        if (files != null) {
+        if (files != null && files.length > 0 && files[0].canRead()) {
             log("【CS】[Video] 自动选择目录中的视频: " + files[0].getName());
             return files[0].getAbsolutePath();
         }
 
+        // 检查应用私有缓存视频
+        if (toast_content != null) {
+            File privateFile = new File(toast_content.getFilesDir(), "vcam_private.mp4");
+            if (privateFile.exists() && privateFile.length() > 0) {
+                log("【CS】[Video] 使用私有缓存视频: " + privateFile.getAbsolutePath());
+                return privateFile.getAbsolutePath();
+            }
+        }
+
         // 无可用视频，仍返回 Cam.mp4 路径（后续解码器会处理文件不存在的情况）
-        log("【CS】[Video] 警告：目录中无可用视频文件");
+        log("【CS】[Video] 警告：目录中无可用视频文件或无读取权限，等待 Provider/Binder 投递...");
         return camFile.getAbsolutePath();
     }
 

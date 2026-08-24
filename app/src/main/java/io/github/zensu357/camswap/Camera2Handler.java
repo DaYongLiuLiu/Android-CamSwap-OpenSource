@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 
 import io.github.zensu357.camswap.api101.Api101Runtime;
+import io.github.zensu357.camswap.utils.HookUtils;
 import io.github.zensu357.camswap.utils.VideoManager;
 import io.github.zensu357.camswap.utils.LogUtil;
 
@@ -61,7 +62,7 @@ public class Camera2Handler implements ICameraHandler {
             Api101Runtime.requireModule().hook(method).intercept(chain -> {
                 Object[] args = toArgs(chain.getArgs());
                 try {
-                    if (args[1] != null && !args[1].equals(HookMain.c2_state_cb)) {
+                    if (args[1] != null) {
                         HookMain.c2_state_cb = (CameraDevice.StateCallback) args[1];
                         HookMain.c2_state_callback = args[1].getClass();
                         File file = HookGuards.resolveVideoFile(true);
@@ -83,7 +84,7 @@ public class Camera2Handler implements ICameraHandler {
 
     // ================================================================
     // 2. CameraManager.openCamera(String, Executor, StateCallback)
-    //    after-only: 记录 state callback 类 (API 28+)
+    //    before-only: 记录 state callback 类 (API 28+)
     // ================================================================
     private void hookOpenCameraExecutor(ClassLoader classLoader, String packageName) {
         try {
@@ -92,22 +93,21 @@ public class Camera2Handler implements ICameraHandler {
                     "openCamera", String.class, Executor.class, CameraDevice.StateCallback.class);
             Api101Runtime.requireModule().hook(method).intercept(chain -> {
                 Object[] args = toArgs(chain.getArgs());
-                Object result = chain.proceed(args);
                 try {
-                    if (args[2] != null && !args[2].equals(HookMain.c2_state_cb)) {
+                    if (args[2] != null) {
                         HookMain.c2_state_cb = (CameraDevice.StateCallback) args[2];
+                        HookMain.c2_state_callback = args[2].getClass();
                         File file = HookGuards.resolveVideoFile(true);
                         if (!HookGuards.shouldBypass(packageName, file)) {
-                            HookMain.c2_state_callback = args[2].getClass();
                             LogUtil.log("【CS】2位参数初始化相机，类：" + HookMain.c2_state_callback.toString());
                             HookMain.camera2Hook.isFirstHookBuild = true;
                             HookMain.process_camera2_init(HookMain.c2_state_callback);
                         }
                     }
                 } catch (Throwable t) {
-                    LogUtil.log("【CS】openCamera(executor) after 异常: " + t);
+                    LogUtil.log("【CS】openCamera(executor) before 异常: " + t);
                 }
-                return result;
+                return chain.proceed(args);
             });
         } catch (Throwable t) {
             LogUtil.log("【CS】Hook openCamera(executor) 失败: " + t);
@@ -260,21 +260,10 @@ public class Camera2Handler implements ICameraHandler {
 
     private static Method resolveMethod(ClassLoader classLoader, String className,
             String methodName, Class<?>... parameterTypes) throws Exception {
-        Class<?> clazz = Class.forName(className, false, classLoader);
-        Class<?> current = clazz;
-        while (current != null) {
-            try {
-                Method m = current.getDeclaredMethod(methodName, parameterTypes);
-                m.setAccessible(true);
-                return m;
-            } catch (NoSuchMethodException ignored) {
-                current = current.getSuperclass();
-            }
-        }
-        throw new NoSuchMethodException(className + "#" + methodName);
+        return HookUtils.resolveMethod(classLoader, className, methodName, parameterTypes);
     }
 
     private static Object[] toArgs(List<Object> args) {
-        return args.toArray(new Object[0]);
+        return HookUtils.toArgs(args);
     }
 }

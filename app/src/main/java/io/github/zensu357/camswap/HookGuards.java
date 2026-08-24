@@ -28,6 +28,10 @@ public final class HookGuards {
         if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
             return true;
         }
+        String injectionMode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
+        if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(injectionMode)) {
+            return true;
+        }
         // Stream mode: delegate to MediaSourceDescriptor-based check
         if (VideoManager.isStreamMode()) {
             return shouldBypass(packageName, VideoManager.getCurrentMediaSource());
@@ -41,22 +45,34 @@ public final class HookGuards {
         if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
             return true;
         }
+        String injectionMode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
+        if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(injectionMode)) {
+            return true;
+        }
         HookMain.need_to_show_toast = !VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
 
-        if (source == null || !source.isValid()) {
+        if (source != null && source.isStream()) {
+            if (source.isValid()) {
+                return false;
+            }
             logMissingMediaSource(packageName);
             return true;
         }
-        // Local mode: check file existence
-        if (!source.isStream()) {
-            return shouldBypassMissingVideo(packageName, source.localPath != null ? new File(source.localPath) : null);
-        }
-        // Stream mode: URL is non-empty, allow through (connection state handled by player)
-        return false;
+
+        return shouldBypassMissingVideo(packageName, (source != null && source.localPath != null) ? new File(source.localPath) : null);
     }
 
     public static boolean shouldBypassMissingVideo(String packageName, File videoFile) {
-        HookMain.need_to_show_toast = !VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
+        if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
+            return true;
+        }
+
+        // 1. Check if provider backed / available
+        if (VideoManager.isUsingProviderBackedVideo() || VideoManager.isProviderAvailable()) {
+            return false;
+        }
+
+        // 2. Check if private cached video exists
         if (HookMain.toast_content != null) {
             try {
                 File privateVideo = new File(HookMain.toast_content.getFilesDir(), "vcam_private.mp4");
@@ -66,9 +82,23 @@ public final class HookGuards {
             } catch (Exception ignored) {
             }
         }
-        if (videoFile != null && videoFile.exists()) {
+
+        // 3. Check if local video file exists and is readable
+        if (videoFile != null && videoFile.exists() && videoFile.canRead()) {
             return false;
         }
+
+        // 4. Try querying VideoProvider PFD
+        try {
+            android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
+            if (pfd != null) {
+                pfd.close();
+                return false;
+            }
+        } catch (Exception ignored) {
+        }
+
+        HookMain.need_to_show_toast = !VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
         logMissingVideo(packageName, videoFile);
         return true;
     }

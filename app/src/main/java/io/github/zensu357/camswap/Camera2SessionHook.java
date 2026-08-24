@@ -278,16 +278,7 @@ public final class Camera2SessionHook {
                             LogUtil.log("【CS】onOpened 延迟获取 Provider 成功");
                         }
                     }
-                    boolean showToast = !VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
-                    if (!file.exists() && !VideoManager.isUsingProviderBackedVideo()) {
-                        if (HookMain.toast_content != null && showToast) {
-                            try {
-                                LogUtil.log("【CS】不存在替换视频: " + HookMain.toast_content.getPackageName()
-                                        + " 当前路径：" + VideoManager.video_path);
-                            } catch (Exception ee) {
-                                LogUtil.log("【CS】[toast]" + ee);
-                            }
-                        }
+                    if (HookGuards.shouldBypass(getCurrentPackageName(), file)) {
                         return chain.proceed(args);
                     }
 
@@ -429,10 +420,9 @@ public final class Camera2SessionHook {
     }
 
     private boolean shouldKeepYuvReaderSurfaceForPackage(Surface surface, String packageName) {
-        // CameraX-style preview/analysis pipelines often consume YUV ImageReader frames
-        // directly. Package allowlists proved too brittle for LINE's camera variants, so
-        // keep all tracked YUV reader surfaces on the real session output and feed them via
-        // the fake YUV bridge instead of redirecting them to the GL preview surface.
+        if (!shouldUseFakeYuvBridgeForPackage(packageName)) {
+            return false;
+        }
         return isYuvReaderSurface(surface)
                 && !isInternalFakeYuvReaderSurface(surface);
     }
@@ -555,14 +545,7 @@ public final class Camera2SessionHook {
         if (previewSurface == null) {
             previewSurface = surface;
         } else if (!previewSurface.equals(surface) && previewSurface1 == null) {
-            // For packages without fake YUV bridge support, only use one preview surface to avoid
-            // rendering RGBA to untracked ImageReader surfaces (CameraX apps
-            // like LINE may expose a second reader-backed target here).
-            if (shouldUseFakeYuvBridgeForPackage(getCurrentPackageName())) {
-                previewSurface1 = surface;
-            } else {
-                LogUtil.log("【CS】跳过第二个 preview surface (无 YUV 兼容): " + surface);
-            }
+            previewSurface1 = surface;
         }
         if (pendingPlayback) {
             LogUtil.log("【CS】addTarget 触发延迟播放 (preview)");
@@ -701,14 +684,99 @@ public final class Camera2SessionHook {
         return new ArrayList<>(rewritten);
     }
 
-    private OutputConfiguration createOutputConfiguration(OutputConfiguration original, Surface surface) {
+    private OutputConfiguration createOutputConfiguration(OutputConfiguration original, Surface surface,
+            String packageName) {
+        OutputConfiguration rewritten = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
-                return new OutputConfiguration(original.getSurfaceGroupId(), surface);
+                rewritten = new OutputConfiguration(original.getSurfaceGroupId(), surface);
             } catch (Throwable ignored) {
             }
         }
-        return new OutputConfiguration(surface);
+        if (rewritten == null) {
+            rewritten = new OutputConfiguration(surface);
+        }
+        copyOutputConfigurationMetadata(original, rewritten);
+        copySharedSurfaces(original, rewritten, surface, packageName);
+        return rewritten;
+    }
+
+    private void copyOutputConfigurationMetadata(OutputConfiguration original,
+            OutputConfiguration rewritten) {
+        copyOutputConfigurationProperty(original, rewritten,
+                "getPhysicalCameraId", "setPhysicalCameraId");
+        copyOutputConfigurationProperty(original, rewritten,
+                "getStreamUseCase", "setStreamUseCase");
+        copyOutputConfigurationProperty(original, rewritten,
+                "getDynamicRangeProfile", "setDynamicRangeProfile");
+        copyOutputConfigurationProperty(original, rewritten,
+                "getTimestampBase", "setTimestampBase");
+        copyOutputConfigurationProperty(original, rewritten,
+                "getMirrorMode", "setMirrorMode");
+        copyOutputConfigurationProperty(original, rewritten,
+                "getReadoutTimestampEnabled", "setReadoutTimestampEnabled");
+        copyOutputConfigurationProperty(original, rewritten,
+                "getColorSpace", "setColorSpace");
+        copyOutputConfigurationSensorPixelModes(original, rewritten);
+    }
+
+    private void copyOutputConfigurationProperty(OutputConfiguration original,
+            OutputConfiguration rewritten, String getterName, String setterName) {
+        try {
+            Object value = invokeNoArgMethod(original, getterName);
+            if (value != null) {
+                invokeCompatibleSingleArgMethod(rewritten, setterName, value);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void copyOutputConfigurationSensorPixelModes(OutputConfiguration original,
+            OutputConfiguration rewritten) {
+        try {
+            Object value = invokeNoArgMethod(original, "getSensorPixelModesUsed");
+            if (value instanceof int[]) {
+                for (int pixelMode : (int[]) value) {
+                    invokeCompatibleSingleArgMethod(rewritten, "addSensorPixelModeUsed", pixelMode);
+                }
+            } else if (value instanceof Iterable) {
+                for (Object pixelMode : (Iterable<?>) value) {
+                    if (pixelMode != null) {
+                        invokeCompatibleSingleArgMethod(rewritten, "addSensorPixelModeUsed", pixelMode);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void copySharedSurfaces(OutputConfiguration original, OutputConfiguration rewritten,
+            Surface rewrittenSurface, String packageName) {
+        try {
+            @SuppressWarnings("unchecked")
+            List<Surface> originalSurfaces = (List<Surface>) invokeNoArgMethod(original, "getSurfaces");
+            if (originalSurfaces == null || originalSurfaces.size() <= 1) {
+                return;
+            }
+            invokeNoArgMethod(rewritten, "enableSurfaceSharing");
+            Surface originalPrimarySurface = original.getSurface();
+            boolean keptOriginalPrimary = rewrittenSurface != null && rewrittenSurface.equals(originalPrimarySurface);
+            for (Surface extraSurface : originalSurfaces) {
+                if (extraSurface == null || extraSurface.equals(originalPrimarySurface)) {
+                    continue;
+                }
+                boolean keepExtraSurface = shouldKeepRealReaderSurfaceForPackage(extraSurface, packageName)
+                        || shouldKeepYuvReaderSurfaceForPackage(extraSurface, packageName);
+                if (!keepExtraSurface && !keptOriginalPrimary) {
+                    continue;
+                }
+                invokeCompatibleSingleArgMethod(rewritten, "addSurface", extraSurface);
+                if (shouldKeepYuvReaderSurfaceForPackage(extraSurface, packageName)) {
+                    sessionKeptYuvSurfaces.add(extraSurface);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private List<OutputConfiguration> rewriteOutputConfigurations(List<?> outputs) {
@@ -728,13 +796,13 @@ public final class Camera2SessionHook {
                 Surface originalSurface = config.getSurface();
                 if (shouldKeepRealReaderSurfaceForPackage(originalSurface, packageName)
                         || shouldKeepYuvReaderSurfaceForPackage(originalSurface, packageName)) {
-                    rewritten.add(createOutputConfiguration(config, originalSurface));
+                    rewritten.add(createOutputConfiguration(config, originalSurface, packageName));
                     if (shouldKeepYuvReaderSurfaceForPackage(originalSurface, packageName)) {
                         sessionKeptYuvSurfaces.add(originalSurface);
                         LogUtil.log("【CS】OutputConfig 保留 YUV reader surface: " + originalSurface);
                     }
                 } else if (!hasVirtualOutput) {
-                    rewritten.add(createOutputConfiguration(config, createVirtualSurface()));
+                    rewritten.add(createOutputConfiguration(config, createVirtualSurface(), packageName));
                     hasVirtualOutput = true;
                 }
             }
@@ -2250,6 +2318,52 @@ public final class Camera2SessionHook {
     // =====================================================================
     // API 101 utilities
     // =====================================================================
+
+    private static Object invokeNoArgMethod(Object target, String methodName) throws Exception {
+        if (target == null) {
+            return null;
+        }
+        Method method = resolveMethodOnClass(target.getClass(), methodName);
+        return method.invoke(target);
+    }
+
+    private static void invokeCompatibleSingleArgMethod(Object target, String methodName,
+            Object value) throws Exception {
+        if (target == null || value == null) {
+            return;
+        }
+        Class<?> current = target.getClass();
+        while (current != null) {
+            Method[] methods = current.getDeclaredMethods();
+            for (Method method : methods) {
+                if (!method.getName().equals(methodName) || method.getParameterTypes().length != 1) {
+                    continue;
+                }
+                Class<?> parameterType = method.getParameterTypes()[0];
+                if (!isParameterCompatible(parameterType, value.getClass())) {
+                    continue;
+                }
+                method.setAccessible(true);
+                method.invoke(target, value);
+                return;
+            }
+            current = current.getSuperclass();
+        }
+    }
+
+    private static boolean isParameterCompatible(Class<?> parameterType, Class<?> valueClass) {
+        if (parameterType.isPrimitive()) {
+            return (parameterType == int.class && Integer.class.isAssignableFrom(valueClass))
+                    || (parameterType == long.class && Long.class.isAssignableFrom(valueClass))
+                    || (parameterType == boolean.class && Boolean.class.isAssignableFrom(valueClass))
+                    || (parameterType == float.class && Float.class.isAssignableFrom(valueClass))
+                    || (parameterType == double.class && Double.class.isAssignableFrom(valueClass))
+                    || (parameterType == byte.class && Byte.class.isAssignableFrom(valueClass))
+                    || (parameterType == short.class && Short.class.isAssignableFrom(valueClass))
+                    || (parameterType == char.class && Character.class.isAssignableFrom(valueClass));
+        }
+        return parameterType.isAssignableFrom(valueClass);
+    }
 
     private static Method resolveMethodOnClass(Class<?> clazz, String methodName,
             Class<?>... parameterTypes) throws NoSuchMethodException {

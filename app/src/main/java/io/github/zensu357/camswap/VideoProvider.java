@@ -37,7 +37,12 @@ public class VideoProvider extends ContentProvider {
             return false;
         }
 
-        Set<String> allowedPackages = new HashSet<>(configManager.getTargetPackages());
+        Set<String> targetPackages = configManager.getTargetPackages();
+        if (targetPackages.isEmpty()) {
+            return true;
+        }
+
+        Set<String> allowedPackages = new HashSet<>(targetPackages);
         allowedPackages.add(context.getPackageName());
         for (String pkg : packages) {
             if (allowedPackages.contains(pkg)) {

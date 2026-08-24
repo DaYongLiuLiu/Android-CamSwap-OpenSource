@@ -26,6 +26,7 @@ import java.util.concurrent.Executor;
 import io.github.libxposed.api.XposedInterface;
 import io.github.zensu357.camswap.api101.Api101Runtime;
 
+import io.github.zensu357.camswap.utils.HookUtils;
 import io.github.zensu357.camswap.utils.PermissionHelper;
 import io.github.zensu357.camswap.utils.VideoManager;
 import io.github.zensu357.camswap.utils.LogUtil;
@@ -129,12 +130,22 @@ public class HookMain {
             configWatcher = new ConfigWatcher(new ConfigWatcher.Callback() {
                 @Override
                 public void onMediaSourceChanged() {
+                    String mode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
+                    if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(mode)) {
+                        playerManager.releaseAllRenderers();
+                        return;
+                    }
                     playerManager.restartAll();
                     camera2Hook.restartYuvDecoderForSourceChange();
                 }
 
                 @Override
                 public void onRotationChanged(int degrees) {
+                    String mode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
+                    if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(mode)) {
+                        playerManager.releaseAllRenderers();
+                        return;
+                    }
                     playerManager.updateRotation(degrees);
                     camera2Hook.restartYuvDecoderForSourceChange();
                 }
@@ -159,6 +170,13 @@ public class HookMain {
         // Check if module is disabled
         if (getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
             LogUtil.log("【CS】模块已被配置禁用");
+            return;
+        }
+
+        // Check if in Root Mode (CameraServer) -> If in Root mode, bypass LSPosed app-level hooks
+        String injectionMode = getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
+        if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(injectionMode)) {
+            LogUtil.log("【CS】当前处于 Root Mode (CameraServer) 模式，已跳过 App 级 LSPosed Hook");
             return;
         }
 
@@ -224,46 +242,21 @@ public class HookMain {
                         registerActivityLifecycleCallbacks(application);
                         toast_content = application.getApplicationContext();
                         VideoManager.setContext(toast_content);
-                        checkProviderAvailability();
-
                         getConfig().setContext(toast_content);
-                        getConfig().forceReload();
-                        VideoManager.updateVideoPath(false);
-                        LogUtil.log("【CS】Application.onCreate 预热：配置和视频路径已加载");
 
-                        initContentObserver(toast_content);
-
-                        try {
-                            NativeAudioHook.init();
-                            LogUtil.log("【CS】Native audio hooks initialized");
-                        } catch (Throwable t) {
-                            LogUtil.log("【CS】Native audio hooks init failed: " + t);
-                        }
-
-                        PermissionHelper.checkAndSetupPaths(toast_content, packageName);
-
-                        // If provider is not available yet (CamSwap app not started),
-                        // schedule background retries so config/video become available
-                        // before the camera is actually opened.
-                        if (!VideoManager.isProviderAvailable()) {
-                            LogUtil.log("【CS】Provider 暂不可用，启动后台重试...");
-                            new Thread(() -> {
-                                for (int retry = 1; retry <= 5; retry++) {
-                                    try { Thread.sleep(2000); } catch (InterruptedException e) { break; }
-                                    VideoManager.checkProviderAvailability();
-                                    if (VideoManager.isProviderAvailable()) {
-                                        getConfig().forceReload();
-                                        VideoManager.updateVideoPath(false);
-                                        PermissionHelper.checkAndSetupPaths(toast_content, packageName);
-                                        LogUtil.log("【CS】Provider 重试第" + retry + "次成功");
-                                        break;
-                                    }
-                                    if (retry == 5) {
-                                        LogUtil.log("【CS】Provider 重试 5 次均失败");
-                                    }
-                                }
-                            }, "CS-ProviderRetry").start();
-                        }
+                        new Thread(() -> {
+                            try {
+                                checkProviderAvailability();
+                                getConfig().forceReload();
+                                VideoManager.updateVideoPath(false);
+                                initContentObserver(toast_content);
+                                NativeAudioHook.init();
+                                PermissionHelper.checkAndSetupPaths(toast_content, packageName);
+                                LogUtil.log("【CS】后台预热完成：配置与视频路径已就绪 (" + packageName + ")");
+                            } catch (Throwable t) {
+                                LogUtil.log("【CS】后台预热异常: " + t);
+                            }
+                        }, "CS-AppWarmup").start();
                     }
                 } catch (Throwable t) {
                     LogUtil.log("【CS】callApplicationOnCreate after 异常: " + t);
@@ -529,7 +522,7 @@ public class HookMain {
         need_to_show_toast = !getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
         if (toast_content != null && need_to_show_toast) {
             try {
-                showToast("应用创建了渲染器：\n宽：" + args[0] + "\n高：" + args[1] + "\n一般只需要宽高比与视频相同");
+                showToast("渲染器: 宽 " + args[0] + "px  高 " + args[1] + "px");
             } catch (Exception e) {
                 LogUtil.log("【CS】[toast]" + e.toString());
             }
@@ -627,25 +620,15 @@ public class HookMain {
 
     private static Method resolveMethod(ClassLoader classLoader, String className,
             String methodName, Class<?>... parameterTypes) throws Exception {
-        return resolveMethod(Class.forName(className, false, classLoader), methodName, parameterTypes);
+        return HookUtils.resolveMethod(classLoader, className, methodName, parameterTypes);
     }
 
     private static Method resolveMethod(Class<?> clazz, String methodName, Class<?>... parameterTypes)
             throws NoSuchMethodException {
-        Class<?> current = clazz;
-        while (current != null) {
-            try {
-                Method method = current.getDeclaredMethod(methodName, parameterTypes);
-                method.setAccessible(true);
-                return method;
-            } catch (NoSuchMethodException ignored) {
-                current = current.getSuperclass();
-            }
-        }
-        throw new NoSuchMethodException(clazz.getName() + "#" + methodName);
+        return HookUtils.resolveMethod(clazz, methodName, parameterTypes);
     }
 
     private static Object[] toArgs(List<Object> args) {
-        return args.toArray(new Object[0]);
+        return HookUtils.toArgs(args);
     }
 }

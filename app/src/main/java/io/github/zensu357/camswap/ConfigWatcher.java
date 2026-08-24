@@ -85,13 +85,12 @@ public final class ConfigWatcher {
                 LogUtil.log("【CS】FileObserver 启动失败: " + e);
             }
 
-            // Active Config Request
-            // request config via broadcast
+            // Active Config Request via broadcast
             new Handler(Looper.getMainLooper()).postDelayed(() -> VideoManager.getConfig().requestConfig(context),
                     1000);
         }
 
-        // BroadcastReceiver for control signals
+        // BroadcastReceiver for control signals & configuration updates
         registerBroadcastReceiver(context);
     }
 
@@ -101,8 +100,6 @@ public final class ConfigWatcher {
                 @Override
                 public void onReceive(Context ctx, Intent intent) {
                     String action = intent.getAction();
-                    // received broadcast action
-
                     if (IpcContract.ACTION_UPDATE_CONFIG.equals(action)) {
                         handleConfigUpdate(intent);
                     }
@@ -111,11 +108,11 @@ public final class ConfigWatcher {
             IntentFilter filter = new IntentFilter();
             filter.addAction(IpcContract.ACTION_UPDATE_CONFIG);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
             } else {
                 context.registerReceiver(receiver, filter);
             }
-            LogUtil.log("【CS】广播接收器已注册");
+            LogUtil.log("【CS】广播接收器已注册 (RECEIVER_EXPORTED)");
         } catch (Exception e) {
             LogUtil.log("【CS】注册广播接收器失败: " + e);
         }
@@ -149,6 +146,11 @@ public final class ConfigWatcher {
         String newSourceType = config.getString(ConfigManager.KEY_MEDIA_SOURCE_TYPE, ConfigManager.MEDIA_SOURCE_LOCAL);
         String newStreamUrl = config.getString(ConfigManager.KEY_STREAM_URL, "");
 
+        // Always extract video from Binder if attached
+        if (intent.hasExtra(IpcContract.EXTRA_VIDEO_BUNDLE)) {
+            extractVideoFromBinder(intent);
+        }
+
         boolean mediaChanged = !oldVideo.equals(newVideo) ||
                 !oldImage.equals(newImage) ||
                 !oldMode.equals(newMode) ||
@@ -157,10 +159,6 @@ public final class ConfigWatcher {
                 !oldStreamUrl.equals(newStreamUrl);
 
         if (mediaChanged) {
-            // Handle Binder-based video file transfer
-            if (config.getBoolean(ConfigManager.KEY_FORCE_PRIVATE_DIR, false)) {
-                extractVideoFromBinder(intent);
-            }
             VideoManager.updateVideoPath(false);
             callback.onMediaSourceChanged();
             LogUtil.log("【CS】配置更新: 媒体源变化，重启播放器");
@@ -205,5 +203,4 @@ public final class ConfigWatcher {
             reply.recycle();
         }
     }
-
 }

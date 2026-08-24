@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import io.github.libxposed.api.XposedInterface;
 import io.github.zensu357.camswap.api101.Api101Runtime;
 
+import io.github.zensu357.camswap.utils.HookUtils;
 import io.github.zensu357.camswap.utils.AudioDataProvider;
 import io.github.zensu357.camswap.utils.LogUtil;
 import io.github.zensu357.camswap.utils.VideoManager;
@@ -311,8 +312,8 @@ public class MicrophoneHandler implements ICameraHandler {
                 String msg = "【CS】⚠ 音频文件时长(" + (audioDuration / 1000) + "s)与视频时长("
                         + (videoDuration / 1000) + "s)不一致，可能导致音画不同步";
                 LogUtil.log(msg);
-                VideoManager.showToast("音频与视频时长不一致\n音频: " + (audioDuration / 1000)
-                        + "s  视频: " + (videoDuration / 1000) + "s");
+                VideoManager.showToast("音频与视频时长不一致: 音频 " + (audioDuration / 1000)
+                        + "s, 视频 " + (videoDuration / 1000) + "s");
                 durationWarningShown.set(true);
             }
         } catch (Exception e) {
@@ -660,30 +661,17 @@ public class MicrophoneHandler implements ICameraHandler {
 
     private static Method resolveMethod(ClassLoader classLoader, String className, String methodName,
             Class<?>... parameterTypes) throws Exception {
-        Class<?> clazz = Class.forName(className, false, classLoader);
-        Class<?> current = clazz;
-        while (current != null) {
-            try {
-                Method method = current.getDeclaredMethod(methodName, parameterTypes);
-                method.setAccessible(true);
-                return method;
-            } catch (NoSuchMethodException ignored) {
-                current = current.getSuperclass();
-            }
-        }
-        throw new NoSuchMethodException(className + "#" + methodName);
+        return HookUtils.resolveMethod(classLoader, className, methodName, parameterTypes);
     }
 
     private static Constructor<?> resolveConstructor(ClassLoader classLoader, String className,
             Class<?>... parameterTypes) throws Exception {
         Class<?> clazz = Class.forName(className, false, classLoader);
-        Constructor<?> constructor = clazz.getDeclaredConstructor(parameterTypes);
-        constructor.setAccessible(true);
-        return constructor;
+        return HookUtils.resolveConstructor(clazz, parameterTypes);
     }
 
     private static Object[] toArgs(List<Object> args) {
-        return args.toArray(new Object[0]);
+        return HookUtils.toArgs(args);
     }
 
     private static int intResult(Object result) {

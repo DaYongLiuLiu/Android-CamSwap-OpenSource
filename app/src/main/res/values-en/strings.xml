@@ -50,6 +50,7 @@
     <string name="stats_audio_format">Total: %1$d | Size: %2$.2f MB</string>
 
     <!-- Settings Screen -->
+    <string name="settings_category_mode">Mode Switch</string>
     <string name="settings_category_general">General Settings</string>
     <string name="settings_notification_control">Enable Notification Control</string>
     <string name="settings_notification_control_desc">Quick switch video in notification</string>
@@ -81,6 +82,18 @@
     <string name="settings_enable_photo_fake_desc">Dynamic interception to inject video frames to static photo requests (High performance cost)</string>
     <string name="settings_system_permission">System Permission Settings</string>
     <string name="settings_system_permission_desc">Manage storage and notification permissions</string>
+    <string name="settings_export_logs">Export Runtime Logs</string>
+    <string name="settings_export_logs_desc">Requires root | Long press to clear logs</string>
+    <string name="settings_export_logs_success">Logs exported successfully</string>
+    <string name="settings_export_logs_failed">Failed to export logs, please check Root permission</string>
+    <string name="settings_clear_logs_success">Logcat buffer cleared successfully</string>
+    <string name="settings_clear_logs_failed">Failed to clear logs, please check Root permission</string>
+    <string name="settings_residual_clean">Anti-Detection &amp; Risk Cleaner</string>
+    <string name="settings_residual_clean_desc">Scan and clean historical virtual camera remnants and sensitive config paths</string>
+    <string name="residual_scan_title">Residual Risk Scan Results</string>
+    <string name="residual_clean_all">Clean All</string>
+    <string name="residual_clean_success">Successfully cleaned %1$d remnants!</string>
+    <string name="residual_clean_none">No remnants or risk paths detected. Environment clean!</string>
 
     <!-- About Section -->
     <string name="about_title">About</string>
@@ -163,5 +176,11 @@
     <string name="status_value_stream">Network Stream</string>
 
     <!-- Toast / Migration -->
-    <string name="config_migrated">Configuration has been migrated</string>
+    <string name="config_migrated">Configuration migrated automatically</string>
+    <string name="root_permission_required">Please grant Root permission to CamSwap in your Root Manager (Magisk/KernelSU)</string>
+    <string name="requesting_root_permission">Requesting Root permission, please tap Grant...</string>
+    <string name="root_mode_activated">Root permission granted! Root mode activated.</string>
+    <string name="root_inject_failed_tip">CameraServer injection pending. Ensure SELinux is Permissive and retry.</string>
+    <string name="root_mode_warning_dialog_title">Notice</string>
+    <string name="root_mode_warning_dialog_text">This mode may not work on higher Android versions</string>
 </resources>

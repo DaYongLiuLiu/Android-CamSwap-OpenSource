@@ -4,18 +4,28 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -38,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import io.github.zensu357.camswap.BuildConfig
 import io.github.zensu357.camswap.ConfigManager
 import io.github.zensu357.camswap.R
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +71,76 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    val camServerShakeOffset = remember { Animatable(0f) }
+
+    val exportLogLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                Toast.makeText(context, "正在通过Root打包系统日志...", Toast.LENGTH_SHORT).show()
+                val success = io.github.zensu357.camswap.utils.LogExporter.exportLogsToUri(context, uri)
+                Toast.makeText(
+                    context,
+                    if (success) context.getString(R.string.settings_export_logs_success)
+                    else context.getString(R.string.settings_export_logs_failed),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    var showRootModeWarningDialog by remember { mutableStateOf(false) }
+
+    val onRootModeConfirm = {
+        viewModel.switchInjectionMode(
+            context = context,
+            targetMode = ConfigManager.INJECTION_MODE_CAMSERVER,
+            onRootFailed = {
+                coroutineScope.launch {
+                    camServerShakeOffset.snapTo(0f)
+                    camServerShakeOffset.animateTo(
+                        targetValue = 0f,
+                        animationSpec = keyframes {
+                            durationMillis = 400
+                            0f at 0
+                            (-12f) at 50
+                            12f at 100
+                            (-8f) at 150
+                            8f at 200
+                            (-4f) at 250
+                            4f at 300
+                            0f at 400
+                        }
+                    )
+                }
+            }
+        )
+    }
+
+    if (showRootModeWarningDialog) {
+        AlertDialog(
+            onDismissRequest = { showRootModeWarningDialog = false },
+            title = { Text(stringResource(R.string.root_mode_warning_dialog_title)) },
+            text = { Text(stringResource(R.string.root_mode_warning_dialog_text)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRootModeWarningDialog = false
+                        onRootModeConfirm()
+                    }
+                ) {
+                    Text(stringResource(R.string.positive))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRootModeWarningDialog = false }) {
+                    Text(stringResource(R.string.negative))
+                }
+            }
+        )
+    }
 
     Column(
             modifier =
@@ -67,8 +149,40 @@ fun SettingsScreen(viewModel: MainViewModel) {
                             .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ==================== Mode Selection ====================
+        SettingsSection(title = stringResource(R.string.settings_category_mode)) {
+            val isLsposedSelected = uiState.injectionMode != ConfigManager.INJECTION_MODE_CAMSERVER
+            val isRootModeSelected = uiState.injectionMode == ConfigManager.INJECTION_MODE_CAMSERVER
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ModeButton(
+                    text = "LSPosed",
+                    isSelected = isLsposedSelected,
+                    onClick = { viewModel.switchInjectionMode(context, ConfigManager.INJECTION_MODE_LSPOSED) {} }
+                )
+
+                ModeButton(
+                    text = "Root Mode",
+                    isSelected = isRootModeSelected,
+                    onClick = {
+                        if (isRootModeSelected) {
+                            onRootModeConfirm()
+                        } else {
+                            showRootModeWarningDialog = true
+                        }
+                    },
+                    modifier = Modifier.offset(x = camServerShakeOffset.value.dp)
+                )
+            }
+        }
+
         // ==================== General Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_general)) {
+
             SettingsSwitchRow(
                     icon = Icons.Default.NotificationsActive,
                     title = stringResource(R.string.settings_notification_control),
@@ -458,6 +572,30 @@ fun SettingsScreen(viewModel: MainViewModel) {
                         }
                 )
             }
+
+            SettingsDivider()
+
+            SettingsClickRow(
+                    icon = Icons.Default.Description,
+                    title = stringResource(R.string.settings_export_logs),
+                    subtitle = stringResource(R.string.settings_export_logs_desc),
+                    onClick = {
+                        val timeStamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
+                        exportLogLauncher.launch("camswap_logs_$timeStamp.zip")
+                    },
+                    onLongClick = {
+                        coroutineScope.launch {
+                            Toast.makeText(context, "正在清空系统日志...", Toast.LENGTH_SHORT).show()
+                            val success = io.github.zensu357.camswap.utils.LogExporter.clearLogs()
+                            Toast.makeText(
+                                context,
+                                if (success) context.getString(R.string.settings_clear_logs_success)
+                                else context.getString(R.string.settings_clear_logs_failed),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+            )
         }
 
         // ==================== About ====================
@@ -526,6 +664,65 @@ fun SettingsScreen(viewModel: MainViewModel) {
 // ==================== Reusable Components ====================
 
 @Composable
+private fun ModeButton(
+    text: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier.padding(top = 6.dp),
+        contentAlignment = Alignment.TopStart
+    ) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(12.dp),
+            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+            border = BorderStroke(
+                width = if (isSelected) 1.5.dp else 1.dp,
+                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+            ),
+            shadowElevation = if (isSelected) 2.dp else 0.dp,
+            modifier = Modifier
+                .width(135.dp)
+                .height(48.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        fontSize = 15.sp
+                    ),
+                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        if (isSelected) {
+            Surface(
+                shape = RoundedCornerShape(topStart = 6.dp, topEnd = 4.dp, bottomEnd = 6.dp, bottomStart = 4.dp),
+                color = MaterialTheme.colorScheme.primary,
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .offset(x = (-4).dp, y = (-7).dp)
+            ) {
+                Text(
+                    text = "Now",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.5.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
             colors =
@@ -590,18 +787,23 @@ private fun SettingsSwitchRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SettingsClickRow(
         icon: ImageVector,
         title: String,
         subtitle: String? = null,
+        onLongClick: (() -> Unit)? = null,
         onClick: () -> Unit
 ) {
     Row(
             modifier =
                     Modifier.fillMaxWidth()
                             .clip(MaterialTheme.shapes.medium)
-                            .clickable(onClick = onClick)
+                            .combinedClickable(
+                                onClick = onClick,
+                                onLongClick = onLongClick
+                            )
                             .padding(vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
     ) {

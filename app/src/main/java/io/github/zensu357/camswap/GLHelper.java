@@ -29,8 +29,16 @@ public final class GLHelper {
             "precision mediump float;\n" +
             "varying vec2 vTextureCoord;\n" +
             "uniform samplerExternalOES sTexture;\n" +
+            "uniform vec3 uAmbientColor;\n" +
+            "uniform float uAmbientIntensity;\n" +
             "void main() {\n" +
-            "    gl_FragColor = texture2D(sTexture, vTextureCoord);\n" +
+            "    vec4 texColor = texture2D(sTexture, vTextureCoord);\n" +
+            "    if (uAmbientIntensity > 0.0) {\n" +
+            "        vec3 tinted = mix(texColor.rgb, texColor.rgb * (1.0 + uAmbientColor * uAmbientIntensity), 0.38);\n" +
+            "        gl_FragColor = vec4(tinted, texColor.a);\n" +
+            "    } else {\n" +
+            "        gl_FragColor = texColor;\n" +
+            "    }\n" +
             "}\n";
 
     // ---- Shared Geometry ----

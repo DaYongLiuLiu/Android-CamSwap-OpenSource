@@ -25,9 +25,13 @@ public class NativeAudioHook {
      * 从 HookMain 的 Application.onCreate hook 中调用。
      */
     public static void init() {
-        System.loadLibrary("camswap-native-hook");
-        boolean ok = nativeInit();
-        LogUtil.log(TAG + " init result=" + ok);
+        try {
+            System.loadLibrary("camswap-native-hook");
+            boolean ok = nativeInit();
+            LogUtil.log(TAG + " init result=" + ok);
+        } catch (Throwable t) {
+            LogUtil.log(TAG + " native hook library unavailable: " + t.getMessage());
+        }
     }
 
     /**
