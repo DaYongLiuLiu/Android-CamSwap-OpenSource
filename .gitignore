@@ -32,7 +32,6 @@ proguard/
 
 # Log files
 *.log
-docs/logs/
 build_output.txt
 build_error*.txt
 
@@ -64,3 +63,7 @@ camswap_release.jks
 releases/
 opencode.json
 .claude/settings.local.json
+
+# Excluded documentation and agent files
+AGENTS.md
+docs/
