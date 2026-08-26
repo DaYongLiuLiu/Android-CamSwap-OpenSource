@@ -72,8 +72,6 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
-    val camServerShakeOffset = remember { Animatable(0f) }
-
     val exportLogLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri: Uri? ->
@@ -94,57 +92,6 @@ fun SettingsScreen(viewModel: MainViewModel) {
         }
     }
 
-    var showRootModeWarningDialog by remember { mutableStateOf(false) }
-
-    val onRootModeConfirm = {
-        viewModel.switchInjectionMode(
-            context = context,
-            targetMode = ConfigManager.INJECTION_MODE_CAMSERVER,
-            onRootFailed = {
-                coroutineScope.launch {
-                    camServerShakeOffset.snapTo(0f)
-                    camServerShakeOffset.animateTo(
-                        targetValue = 0f,
-                        animationSpec = keyframes {
-                            durationMillis = 400
-                            0f at 0
-                            (-12f) at 50
-                            12f at 100
-                            (-8f) at 150
-                            8f at 200
-                            (-4f) at 250
-                            4f at 300
-                            0f at 400
-                        }
-                    )
-                }
-            }
-        )
-    }
-
-    if (showRootModeWarningDialog) {
-        AlertDialog(
-            onDismissRequest = { showRootModeWarningDialog = false },
-            title = { Text(stringResource(R.string.root_mode_warning_dialog_title)) },
-            text = { Text(stringResource(R.string.root_mode_warning_dialog_text)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showRootModeWarningDialog = false
-                        onRootModeConfirm()
-                    }
-                ) {
-                    Text(stringResource(R.string.positive))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRootModeWarningDialog = false }) {
-                    Text(stringResource(R.string.negative))
-                }
-            }
-        )
-    }
-
     Column(
             modifier =
                     Modifier.fillMaxSize()
@@ -152,36 +99,6 @@ fun SettingsScreen(viewModel: MainViewModel) {
                             .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // ==================== Mode Selection ====================
-        SettingsSection(title = stringResource(R.string.settings_category_mode)) {
-            val isLsposedSelected = uiState.injectionMode != ConfigManager.INJECTION_MODE_CAMSERVER
-            val isRootModeSelected = uiState.injectionMode == ConfigManager.INJECTION_MODE_CAMSERVER
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ModeButton(
-                    text = "LSPosed",
-                    isSelected = isLsposedSelected,
-                    onClick = { viewModel.switchInjectionMode(context, ConfigManager.INJECTION_MODE_LSPOSED) {} }
-                )
-
-                ModeButton(
-                    text = "Root Mode",
-                    isSelected = isRootModeSelected,
-                    onClick = {
-                        if (isRootModeSelected) {
-                            onRootModeConfirm()
-                        } else {
-                            showRootModeWarningDialog = true
-                        }
-                    },
-                    modifier = Modifier.offset(x = camServerShakeOffset.value.dp)
-                )
-            }
-        }
 
         // ==================== General Settings ====================
         SettingsSection(title = stringResource(R.string.settings_category_general)) {
@@ -669,65 +586,6 @@ fun SettingsScreen(viewModel: MainViewModel) {
 }
 
 // ==================== Reusable Components ====================
-
-@Composable
-private fun ModeButton(
-    text: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier.padding(top = 6.dp),
-        contentAlignment = Alignment.TopStart
-    ) {
-        Surface(
-            onClick = onClick,
-            shape = RoundedCornerShape(12.dp),
-            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-            border = BorderStroke(
-                width = if (isSelected) 1.5.dp else 1.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-            ),
-            shadowElevation = if (isSelected) 2.dp else 0.dp,
-            modifier = Modifier
-                .width(135.dp)
-                .height(48.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        fontSize = 15.sp
-                    ),
-                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
-
-        if (isSelected) {
-            Surface(
-                shape = RoundedCornerShape(topStart = 6.dp, topEnd = 4.dp, bottomEnd = 6.dp, bottomStart = 4.dp),
-                color = MaterialTheme.colorScheme.primary,
-                shadowElevation = 2.dp,
-                modifier = Modifier
-                    .offset(x = (-4).dp, y = (-7).dp)
-            ) {
-                Text(
-                    text = "Now",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.5.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {

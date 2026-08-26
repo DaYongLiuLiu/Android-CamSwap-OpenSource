@@ -130,22 +130,12 @@ public class HookMain {
             configWatcher = new ConfigWatcher(new ConfigWatcher.Callback() {
                 @Override
                 public void onMediaSourceChanged() {
-                    String mode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
-                    if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(mode)) {
-                        playerManager.releaseAllRenderers();
-                        return;
-                    }
                     playerManager.restartAll();
                     camera2Hook.restartYuvDecoderForSourceChange();
                 }
 
                 @Override
                 public void onRotationChanged(int degrees) {
-                    String mode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
-                    if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(mode)) {
-                        playerManager.releaseAllRenderers();
-                        return;
-                    }
                     playerManager.updateRotation(degrees);
                     camera2Hook.restartYuvDecoderForSourceChange();
                 }
@@ -170,13 +160,6 @@ public class HookMain {
         // Check if module is disabled
         if (getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
             LogUtil.log("【CS】模块已被配置禁用");
-            return;
-        }
-
-        // Check if in Root Mode (CameraServer) -> If in Root mode, bypass LSPosed app-level hooks
-        String injectionMode = getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
-        if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(injectionMode)) {
-            LogUtil.log("【CS】当前处于 Root Mode (CameraServer) 模式，已跳过 App 级 LSPosed Hook");
             return;
         }
 

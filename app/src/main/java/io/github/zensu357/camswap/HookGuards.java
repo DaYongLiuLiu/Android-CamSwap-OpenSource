@@ -28,10 +28,6 @@ public final class HookGuards {
         if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
             return true;
         }
-        String injectionMode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
-        if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(injectionMode)) {
-            return true;
-        }
         // Stream mode: delegate to MediaSourceDescriptor-based check
         if (VideoManager.isStreamMode()) {
             return shouldBypass(packageName, VideoManager.getCurrentMediaSource());
@@ -43,10 +39,6 @@ public final class HookGuards {
 
     public static boolean shouldBypass(String packageName, MediaSourceDescriptor source) {
         if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_MODULE, false)) {
-            return true;
-        }
-        String injectionMode = VideoManager.getConfig().getString(ConfigManager.KEY_INJECTION_MODE, ConfigManager.INJECTION_MODE_LSPOSED);
-        if (ConfigManager.INJECTION_MODE_CAMSERVER.equals(injectionMode)) {
             return true;
         }
         HookMain.need_to_show_toast = !VideoManager.getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
