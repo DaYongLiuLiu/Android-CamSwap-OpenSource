@@ -1,8 +1,12 @@
 package io.github.zensu357.camswap;
 
 import android.media.MediaPlayer;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.view.Surface;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.zensu357.camswap.utils.LogUtil;
 import io.github.zensu357.camswap.utils.VideoManager;
@@ -17,6 +21,7 @@ import io.github.zensu357.camswap.utils.VideoManager;
  */
 public final class MediaPlayerManager {
     private final Object mediaLock = new Object();
+    private final Map<MediaPlayer, ParcelFileDescriptor> activePfds = new ConcurrentHashMap<>();
     private String currentPackageName;
     private volatile long lastCamera2PlaybackStartRealtimeMs;
     private volatile int lastCamera2PlaybackDurationMs;
@@ -244,9 +249,41 @@ public final class MediaPlayerManager {
         }
     }
 
+    public void bindCamera1Pfd(MediaPlayer player, ParcelFileDescriptor pfd) {
+        bindPfd(player, pfd);
+    }
+
+    public void closeCamera1Pfd(MediaPlayer player) {
+        closePfd(player);
+    }
+
+    private void bindPfd(MediaPlayer player, ParcelFileDescriptor pfd) {
+        if (player == null || pfd == null) return;
+        ParcelFileDescriptor old = activePfds.put(player, pfd);
+        if (old != null && old != pfd) {
+            try {
+                old.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void closePfd(MediaPlayer player) {
+        if (player == null) return;
+        ParcelFileDescriptor pfd = activePfds.remove(player);
+        if (pfd != null) {
+            try {
+                pfd.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private MediaPlayer recreatePlayer(MediaPlayer old) {
-        if (old != null)
+        if (old != null) {
+            closePfd(old);
             old.release();
+        }
         return new MediaPlayer();
     }
 
@@ -336,9 +373,10 @@ public final class MediaPlayerManager {
             }
             android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
             if (pfd != null) {
+                bindPfd(player, pfd);
                 player.setDataSource(pfd.getFileDescriptor());
-                pfd.close();
             } else {
+                closePfd(player);
                 player.setDataSource(getVideoPath());
             }
             player.prepare();
@@ -412,6 +450,7 @@ public final class MediaPlayerManager {
     private void stopAndRelease(MediaPlayer player) {
         if (player == null)
             return;
+        closePfd(player);
         try {
             player.stop();
         } catch (Exception ignored) {
@@ -429,14 +468,17 @@ public final class MediaPlayerManager {
             return;
         GLVideoRenderer.releaseSafely(rendererRef[0]);
         SurfaceRelay.releaseSafely(relayRef[0]);
-        // 预览渲染器旋转固定为 0°：应用（如 WhatsApp）会对预览自行应用相机传感器旋转，
-        // CamSwap 不应再叠加旋转，否则本机画面会被双重旋转。
-        // video_rotation_offset 仅在 YUV 截帧时通过 captureFrameForYuv 应用，确保对方画面正确。
-        rendererRef[0] = GLVideoRenderer.createSafely(targetSurface, tag);
+        rendererRef[0] = null;
+        relayRef[0] = null;
+
         if (!playSound)
             player.setVolume(0, 0);
         player.setLooping(true);
         try {
+            // 预览渲染器旋转固定为 0°：应用（如 WhatsApp、LINE）会对预览自行应用相机传感器旋转，
+            // CamSwap 不应再叠加旋转，否则本机画面会被双重旋转。
+            // video_rotation_offset 仅在 YUV 截帧时通过 captureFrameForYuv 应用，确保对方画面正确。
+            rendererRef[0] = GLVideoRenderer.createSafely(targetSurface, tag);
             if (rendererRef[0] != null) {
                 player.setSurface(rendererRef[0].getInputSurface());
                 rendererRef[0].setRotation(0);
@@ -456,9 +498,10 @@ public final class MediaPlayerManager {
 
             android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
             if (pfd != null) {
+                bindPfd(player, pfd);
                 player.setDataSource(pfd.getFileDescriptor());
-                pfd.close();
             } else {
+                closePfd(player);
                 player.setDataSource(getVideoPath());
             }
             player.setOnErrorListener((mp, what, extra) -> {

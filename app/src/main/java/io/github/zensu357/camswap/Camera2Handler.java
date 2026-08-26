@@ -129,7 +129,7 @@ public class Camera2Handler implements ICameraHandler {
                     if (args[0] == null || chain.getThisObject() == null) {
                         return chain.proceed(args);
                     }
-                    if (((Surface) args[0]).equals(HookMain.camera2Hook.getVirtualSurface())) {
+                    if (HookMain.camera2Hook.isVirtualSurface((Surface) args[0])) {
                         return chain.proceed(args);
                     }
                     if (HookGuards.shouldBypass(packageName, HookGuards.getCurrentVideoFile())) {
@@ -167,8 +167,8 @@ public class Camera2Handler implements ICameraHandler {
                         HookMain.camera2Hook.rememberPreviewSurface(originalSurface);
                     }
                     LogUtil.log("【CS】添加目标：" + originalSurface.toString());
-                    // Ensure virtual surface exists (lazy creation if onOpened hook didn't fire)
-                    Surface vSurface = HookMain.camera2Hook.getVirtualSurface();
+                    // Route to matched virtual surface for this original surface
+                    Surface vSurface = HookMain.camera2Hook.getVirtualSurfaceFor(originalSurface);
                     if (vSurface == null || !vSurface.isValid()) {
                         vSurface = HookMain.camera2Hook.ensureVirtualSurface();
                     }

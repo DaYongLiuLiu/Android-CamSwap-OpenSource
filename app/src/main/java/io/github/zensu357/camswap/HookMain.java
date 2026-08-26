@@ -13,6 +13,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
@@ -70,6 +71,8 @@ public class HookMain {
     public static Class c2_state_callback;
     public static CameraDevice.StateCallback c2_state_cb;
     public static Context toast_content;
+    private static long lastImageReaderToastMs = 0L;
+    private static String lastImageReaderToastMsg = "";
 
     // =====================================================================
     // Delegates (kept for backward compatibility with Camera1/2 Handlers)
@@ -169,6 +172,7 @@ public class HookMain {
         }
 
         camera2Hook.setCurrentPackageName(packageName);
+        playerManager.setPackageName(packageName);
 
         // Initialize Camera Handlers
         new Camera1Handler().init(packageContext);
@@ -504,10 +508,16 @@ public class HookMain {
         imageReaderFormat = (int) args[2];
         need_to_show_toast = !getConfig().getBoolean(ConfigManager.KEY_DISABLE_TOAST, false);
         if (toast_content != null && need_to_show_toast) {
-            try {
-                showToast("渲染器: 宽 " + args[0] + "px  高 " + args[1] + "px");
-            } catch (Exception e) {
-                LogUtil.log("【CS】[toast]" + e.toString());
+            String msg = "渲染器: 宽 " + args[0] + "px  高 " + args[1] + "px";
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastImageReaderToastMs > 4000L || !msg.equals(lastImageReaderToastMsg)) {
+                lastImageReaderToastMs = now;
+                lastImageReaderToastMsg = msg;
+                try {
+                    showToast(msg);
+                } catch (Exception e) {
+                    LogUtil.log("【CS】[toast]" + e.toString());
+                }
             }
         }
     }

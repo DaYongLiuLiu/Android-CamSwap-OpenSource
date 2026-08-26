@@ -125,9 +125,10 @@ public final class Camera2SessionHook {
     // Surface-change tracking: skip redundant initCamera2Players when surfaces unchanged
     private Surface lastInitReader, lastInitReader1, lastInitPreview, lastInitPreview1;
 
-    // Virtual surface for session hijacking
-    private Surface virtualSurface;
-    private SurfaceTexture virtualTexture;
+    // Virtual surface pool for session hijacking (supports multiple OutputConfigurations)
+    private final List<Surface> virtualSurfaces = new ArrayList<>();
+    private final List<SurfaceTexture> virtualTextures = new ArrayList<>();
+    private final Map<Surface, Surface> originalToVirtualMap = new ConcurrentHashMap<>();
     private HandlerThread virtualSurfaceDrainThread;
     private Handler virtualSurfaceDrainHandler;
     private boolean needRecreate;
@@ -144,13 +145,29 @@ public final class Camera2SessionHook {
         }
     };
 
+    /** Check if a surface is one of CamSwap's virtual surfaces. */
+    public synchronized boolean isVirtualSurface(Surface surface) {
+        return surface != null && virtualSurfaces.contains(surface);
+    }
+
     /** Public accessor for Camera2Handler to check/redirect surfaces. */
     public Surface getVirtualSurface() {
-        return virtualSurface;
+        return createVirtualSurface(0);
+    }
+
+    /** Get the matched virtual surface for the original target surface. */
+    public Surface getVirtualSurfaceFor(Surface originalSurface) {
+        if (originalSurface != null) {
+            Surface vs = originalToVirtualMap.get(originalSurface);
+            if (vs != null && vs.isValid()) {
+                return vs;
+            }
+        }
+        return getVirtualSurface();
     }
 
     /** Mark virtual surface for recreation on next session creation. */
-    public void invalidateVirtualSurface() {
+    public synchronized void invalidateVirtualSurface() {
         needRecreate = true;
     }
 
@@ -159,12 +176,7 @@ public final class Camera2SessionHook {
      * in case onOpened hook didn't fire (ART optimization on obfuscated classes).
      */
     public Surface ensureVirtualSurface() {
-        if (virtualSurface == null || !virtualSurface.isValid()) {
-            needRecreate = true;
-            createVirtualSurface();
-            LogUtil.log("【CS】延迟创建虚拟 Surface（onOpened 未触发回退）");
-        }
-        return virtualSurface;
+        return createVirtualSurface(0);
     }
 
     // Session config
@@ -212,6 +224,9 @@ public final class Camera2SessionHook {
     private boolean shouldUseYuvPumpForSurface(Surface surface) {
         if (surface == null || !isYuvReaderSurface(surface)) {
             return false;
+        }
+        if (shouldUseFakeYuvBridgeForPackage(getCurrentPackageName())) {
+            return true;
         }
         return isCurrentSessionYuvReaderSurface(surface);
     }
@@ -542,13 +557,16 @@ public final class Camera2SessionHook {
         if (surface == null || isTrackedReaderSurface(surface)) {
             return;
         }
+        boolean isNew = false;
         if (previewSurface == null) {
             previewSurface = surface;
+            isNew = true;
         } else if (!previewSurface.equals(surface) && previewSurface1 == null) {
             previewSurface1 = surface;
+            isNew = true;
         }
-        if (pendingPlayback) {
-            LogUtil.log("【CS】addTarget 触发延迟播放 (preview)");
+        if (isNew || pendingPlayback) {
+            LogUtil.log("【CS】addTarget 触发播放 (preview: " + surface + ")");
             startPlayback();
         }
     }
@@ -567,13 +585,16 @@ public final class Camera2SessionHook {
             LogUtil.log("【CS】跳过 YUV reader surface 作为播放目标 (无 YUV 兼容): " + surface);
             return;
         }
+        boolean isNew = false;
         if (readerSurface == null) {
             readerSurface = surface;
+            isNew = true;
         } else if (!readerSurface.equals(surface) && readerSurface1 == null) {
             readerSurface1 = surface;
+            isNew = true;
         }
-        if (pendingPlayback) {
-            LogUtil.log("【CS】addTarget 触发延迟播放 (reader)");
+        if (isNew || pendingPlayback) {
+            LogUtil.log("【CS】addTarget 触发播放 (reader: " + surface + ")");
             startPlayback();
         }
     }
@@ -608,55 +629,62 @@ public final class Camera2SessionHook {
     // Virtual surface management
     // =====================================================================
 
-    private Surface createVirtualSurface() {
+    private synchronized void ensureVirtualDrainThread() {
+        if (virtualSurfaceDrainThread == null || !virtualSurfaceDrainThread.isAlive()) {
+            virtualSurfaceDrainThread = new HandlerThread("CS-VirtualDrain");
+            virtualSurfaceDrainThread.start();
+            virtualSurfaceDrainHandler = new Handler(virtualSurfaceDrainThread.getLooper());
+        }
+    }
+
+    private synchronized void releaseVirtualSurfaces() {
+        for (Surface vs : virtualSurfaces) {
+            if (vs != null) {
+                try {
+                    vs.release();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        virtualSurfaces.clear();
+        for (SurfaceTexture vt : virtualTextures) {
+            if (vt != null) {
+                try {
+                    vt.release();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        virtualTextures.clear();
+        originalToVirtualMap.clear();
+    }
+
+    private synchronized Surface createVirtualSurface(int index) {
         if (needRecreate) {
-            if (virtualTexture != null) {
-                virtualTexture.release();
-                virtualTexture = null;
-            }
-            if (virtualSurface != null) {
-                virtualSurface.release();
-                virtualSurface = null;
-            }
-            // Ensure a drain thread exists to consume camera HAL frames,
-            // preventing buffer queue stall and native crash.
-            if (virtualSurfaceDrainThread == null) {
-                virtualSurfaceDrainThread = new HandlerThread("CS-VirtualDrain");
-                virtualSurfaceDrainThread.start();
-                virtualSurfaceDrainHandler = new Handler(virtualSurfaceDrainThread.getLooper());
-            }
-            virtualTexture = new SurfaceTexture(15);
-            virtualTexture.setDefaultBufferSize(1920, 1080);
-            virtualTexture.setOnFrameAvailableListener(st -> {
+            releaseVirtualSurfaces();
+            needRecreate = false;
+        }
+        ensureVirtualDrainThread();
+        while (virtualSurfaces.size() <= index) {
+            int texIndex = 15 + virtualSurfaces.size();
+            SurfaceTexture vt = new SurfaceTexture(texIndex);
+            vt.setDefaultBufferSize(1920, 1080);
+            vt.setOnFrameAvailableListener(st -> {
                 try {
                     st.updateTexImage();
                 } catch (Exception ignored) {
                 }
             }, virtualSurfaceDrainHandler);
-            virtualSurface = new Surface(virtualTexture);
-            needRecreate = false;
-        } else {
-            if (virtualSurface == null) {
-                needRecreate = true;
-                virtualSurface = createVirtualSurface();
-            }
+            Surface vs = new Surface(vt);
+            virtualTextures.add(vt);
+            virtualSurfaces.add(vs);
+            LogUtil.log("【CS】创建虚拟Surface[" + (virtualSurfaces.size() - 1) + "]: " + vs);
         }
-        LogUtil.log("【CS】虚拟Surface已创建");
-        return virtualSurface;
+        return virtualSurfaces.get(index);
     }
 
-    private Surface getSessionSurface(Surface surface) {
-        if (shouldKeepRealReaderSurface(surface)) {
-            return surface;
-        }
-        return createVirtualSurface();
-    }
-
-    private Surface getSessionSurface(Surface surface, String packageName) {
-        if (shouldKeepRealReaderSurfaceForPackage(surface, packageName)) {
-            return surface;
-        }
-        return createVirtualSurface();
+    private Surface createVirtualSurface() {
+        return createVirtualSurface(0);
     }
 
     private List<Surface> rewriteSessionSurfaces(List<?> outputs) {
@@ -665,21 +693,30 @@ public final class Camera2SessionHook {
 
     private List<Surface> rewriteSessionSurfaces(List<?> outputs, String packageName) {
         LinkedHashSet<Surface> rewritten = new LinkedHashSet<>();
+        sessionKeptYuvSurfaces.clear();
+        int virtualIndex = 0;
         if (outputs != null) {
             for (Object output : outputs) {
                 if (output instanceof Surface) {
                     Surface surface = (Surface) output;
-                    if (shouldKeepYuvReaderSurfaceForPackage(surface, packageName)) {
+                    if (shouldKeepRealReaderSurfaceForPackage(surface, packageName)
+                            || shouldKeepYuvReaderSurfaceForPackage(surface, packageName)) {
                         rewritten.add(surface);
-                        sessionKeptYuvSurfaces.add(surface);
+                        if (shouldKeepYuvReaderSurfaceForPackage(surface, packageName)) {
+                            sessionKeptYuvSurfaces.add(surface);
+                            LogUtil.log("【CS】SessionSurfaces 保留 YUV reader surface: " + surface);
+                        }
                     } else {
-                        rewritten.add(getSessionSurface(surface, packageName));
+                        Surface vSurface = createVirtualSurface(virtualIndex++);
+                        originalToVirtualMap.put(surface, vSurface);
+                        rewritten.add(vSurface);
+                        LogUtil.log("【CS】SessionSurfaces 替换预览 Surface -> virtual[" + (virtualIndex - 1) + "]: " + surface);
                     }
                 }
             }
         }
         if (rewritten.isEmpty()) {
-            rewritten.add(createVirtualSurface());
+            rewritten.add(createVirtualSurface(0));
         }
         return new ArrayList<>(rewritten);
     }
@@ -785,8 +822,8 @@ public final class Camera2SessionHook {
 
     private List<OutputConfiguration> rewriteOutputConfigurations(List<?> outputs, String packageName) {
         List<OutputConfiguration> rewritten = new ArrayList<>();
-        boolean hasVirtualOutput = false;
         sessionKeptYuvSurfaces.clear();
+        int virtualIndex = 0;
         if (outputs != null) {
             for (Object output : outputs) {
                 if (!(output instanceof OutputConfiguration)) {
@@ -801,14 +838,18 @@ public final class Camera2SessionHook {
                         sessionKeptYuvSurfaces.add(originalSurface);
                         LogUtil.log("【CS】OutputConfig 保留 YUV reader surface: " + originalSurface);
                     }
-                } else if (!hasVirtualOutput) {
-                    rewritten.add(createOutputConfiguration(config, createVirtualSurface(), packageName));
-                    hasVirtualOutput = true;
+                } else {
+                    Surface vSurface = createVirtualSurface(virtualIndex++);
+                    if (originalSurface != null) {
+                        originalToVirtualMap.put(originalSurface, vSurface);
+                    }
+                    rewritten.add(createOutputConfiguration(config, vSurface, packageName));
+                    LogUtil.log("【CS】OutputConfig 替换预览 Surface -> virtual[" + (virtualIndex - 1) + "]: " + originalSurface);
                 }
             }
         }
         if (rewritten.isEmpty()) {
-            rewritten.add(new OutputConfiguration(createVirtualSurface()));
+            rewritten.add(new OutputConfiguration(createVirtualSurface(0)));
         }
         return rewritten;
     }
@@ -1166,8 +1207,7 @@ public final class Camera2SessionHook {
         }
         ImageReader imageReader = (ImageReader) imageReaderObj;
         Surface surface = imageReader.getSurface();
-        if (!shouldKeepYuvReaderSurfaceForCurrentPackage(surface)
-                || !shouldUseYuvPumpForSurface(surface)) {
+        if (!shouldKeepYuvReaderSurfaceForCurrentPackage(surface)) {
             stopWhatsAppYuvPump(imageReader);
             return;
         }
@@ -1184,6 +1224,7 @@ public final class Camera2SessionHook {
         pump.listener = listenerObj;
         pump.onImageAvailableMethod = null;
         pump.targetHandler = handler;
+        LogUtil.log("【CS】YUV 回调已登记: " + surface + " (ready=" + shouldDriveYuvBridgeNow() + ")");
         if (pump.running || !shouldDriveYuvBridgeNow()) {
             return;
         }
@@ -1407,7 +1448,7 @@ public final class Camera2SessionHook {
                 try {
                     copyCachedYuvFrameToImage(cached, inputImage);
                     inputImage.setCropRect(new Rect(0, 0, width, height));
-                    inputImage.setTimestamp(System.nanoTime());
+                    inputImage.setTimestamp(SystemClock.elapsedRealtimeNanos());
                     bridge.writer.queueInputImage(inputImage);
                     queued = true;
                 } finally {
@@ -1637,10 +1678,11 @@ public final class Camera2SessionHook {
         byte[] yPlane = new byte[width * height];
         byte[] uPlane = new byte[(width / 2) * (height / 2)];
         byte[] vPlane = new byte[(width / 2) * (height / 2)];
-        Arrays.fill(yPlane, (byte) 16);
-        Arrays.fill(uPlane, (byte) 128);
-        Arrays.fill(vPlane, (byte) 128);
-        return new CachedYuvFrame(width, height, yPlane, uPlane, vPlane, nowMs, System.nanoTime(), true);
+        // 使用自然明亮白光/肤色灰度 (Y=180, U=115, V=140)，避免暗光测光算法将画面拉黑
+        Arrays.fill(yPlane, (byte) 180);
+        Arrays.fill(uPlane, (byte) 115);
+        Arrays.fill(vPlane, (byte) 140);
+        return new CachedYuvFrame(width, height, yPlane, uPlane, vPlane, nowMs, SystemClock.elapsedRealtimeNanos(), true);
     }
 
     private void copyCachedYuvFrameToImage(CachedYuvFrame cached, Image image) {

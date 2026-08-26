@@ -236,9 +236,10 @@ public class Camera1Handler implements ICameraHandler {
         try {
             android.os.ParcelFileDescriptor pfd = HookMain.getVideoPFD();
             if (pfd != null) {
+                HookMain.playerManager.bindCamera1Pfd(HookMain.playerManager.mplayer1, pfd);
                 HookMain.playerManager.mplayer1.setDataSource(pfd.getFileDescriptor());
-                pfd.close();
             } else {
+                HookMain.playerManager.closeCamera1Pfd(HookMain.playerManager.mplayer1);
                 HookMain.playerManager.mplayer1.setDataSource(VideoManager.getCurrentVideoPath());
             }
             HookMain.playerManager.mplayer1.prepare();
@@ -291,9 +292,10 @@ public class Camera1Handler implements ICameraHandler {
         try {
             android.os.ParcelFileDescriptor pfd = HookMain.getVideoPFD();
             if (pfd != null) {
+                HookMain.playerManager.bindCamera1Pfd(HookMain.playerManager.mMediaPlayer, pfd);
                 HookMain.playerManager.mMediaPlayer.setDataSource(pfd.getFileDescriptor());
-                pfd.close();
             } else {
+                HookMain.playerManager.closeCamera1Pfd(HookMain.playerManager.mMediaPlayer);
                 HookMain.playerManager.mMediaPlayer.setDataSource(VideoManager.getCurrentVideoPath());
             }
             HookMain.playerManager.mMediaPlayer.prepare();

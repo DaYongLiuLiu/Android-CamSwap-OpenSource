@@ -20,6 +20,7 @@ public final class AndroidMediaPlayerBackend implements SurfacePlayerBackend {
     private boolean looping = true;
     private float volume = 0f;
     private MediaSourceDescriptor currentSource;
+    private ParcelFileDescriptor activePfd;
 
     public AndroidMediaPlayerBackend() {
         player = new MediaPlayer();
@@ -37,6 +38,13 @@ public final class AndroidMediaPlayerBackend implements SurfacePlayerBackend {
     public void open(MediaSourceDescriptor source) {
         this.currentSource = source;
         try {
+            if (activePfd != null) {
+                try {
+                    activePfd.close();
+                } catch (Exception ignored) {
+                }
+                activePfd = null;
+            }
             player.reset();
             player.setLooping(looping);
             player.setVolume(volume, volume);
@@ -45,8 +53,8 @@ public final class AndroidMediaPlayerBackend implements SurfacePlayerBackend {
             if (source.useProviderPfd) {
                 ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
                 if (pfd != null) {
+                    this.activePfd = pfd;
                     player.setDataSource(pfd.getFileDescriptor());
-                    pfd.close();
                 } else {
                     player.setDataSource(source.localPath);
                 }
@@ -105,6 +113,13 @@ public final class AndroidMediaPlayerBackend implements SurfacePlayerBackend {
 
     @Override
     public void release() {
+        if (activePfd != null) {
+            try {
+                activePfd.close();
+            } catch (Exception ignored) {
+            }
+            activePfd = null;
+        }
         if (player != null) {
             try {
                 player.stop();
