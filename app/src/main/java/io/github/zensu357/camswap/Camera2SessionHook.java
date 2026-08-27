@@ -433,16 +433,11 @@ public final class Camera2SessionHook {
         markYuvBridgeSessionReadyIfPossible();
         startContinuousYuvPumper();
 
-        // WhatsApp / LINE 视频通话：预览渲染器旋转设为 0°，让本机自拍画面方向正确。
-        // YUV 截帧时通过 captureFrameWithRotation 单独应用 video_rotation_offset，
-        // 确保对方看到正确方向。
-        if ((isWhatsAppPackage(getCurrentPackageName()) || isLinePackage(getCurrentPackageName()))
-                && !whatsappYuvPumpMap.isEmpty()) {
-            MediaPlayerManager pm = HookMain.playerManager;
-            if (pm.c2_renderer != null) pm.c2_renderer.setRotation(0);
-            if (pm.c2_renderer_1 != null) pm.c2_renderer_1.setRotation(0);
-            LogUtil.log("【CS】【SessionHook】VoIP 视频通话：预览渲染器旋转已固定为 0°");
-        }
+        int userRotation = VideoManager.getConfig().getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
+        MediaPlayerManager pm = HookMain.playerManager;
+        if (pm.c2_renderer != null) pm.c2_renderer.setRotation(userRotation);
+        if (pm.c2_renderer_1 != null) pm.c2_renderer_1.setRotation(userRotation);
+        LogUtil.log("【CS】【SessionHook】渲染器旋转角度已应用: " + userRotation + "°");
     }
 
     public static long getSurfaceNativeHandle(Surface surface) {
@@ -2438,7 +2433,12 @@ public final class Camera2SessionHook {
 
             buffer.clear();
             buffer.put(jpegBytes);
-            buffer.flip();
+            buffer.position(0);
+            buffer.limit(jpegBytes.length);
+            try {
+                image.setCropRect(new android.graphics.Rect(0, 0, image.getWidth(), image.getHeight()));
+            } catch (Throwable ignored) {
+            }
             pendingJpegSurfaces.remove(surface);
             pendingPhotoSurface = null;
             LogUtil.log("【CS】成功替换 JPEG 拍照照片为当前虚拟画面: 大小=" + jpegBytes.length + " 字节");
@@ -2550,30 +2550,20 @@ public final class Camera2SessionHook {
         Image.Plane[] planes = image.getPlanes();
         if (planes == null || planes.length < 3) return;
 
-        int width = Math.min(image.getWidth(), yuv.width);
-        int height = Math.min(image.getHeight(), yuv.height);
+        int userRotation = VideoManager.getConfig().getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0) % 360;
+        if (userRotation < 0) userRotation += 360;
 
-        // Y 分量严格按 RowStride 对齐写入
+        int imgW = image.getWidth();
+        int imgH = image.getHeight();
+        int srcW = yuv.width;
+        int srcH = yuv.height;
+
         ByteBuffer yBuf = planes[0].getBuffer();
         int yRowStride = planes[0].getRowStride();
         int yPixelStride = planes[0].getPixelStride();
         byte[] ySrc = yuv.yPlane;
         yBuf.clear();
-        for (int r = 0; r < height; r++) {
-            yBuf.position(r * yRowStride);
-            int srcOffset = r * yuv.width;
-            if (yPixelStride == 1) {
-                yBuf.put(ySrc, srcOffset, width);
-            } else {
-                for (int c = 0; c < width; c++) {
-                    yBuf.put(r * yRowStride + c * yPixelStride, ySrc[srcOffset + c]);
-                }
-            }
-        }
 
-        // UV 分量严格按 RowStride 对齐写入
-        int uvWidth = width / 2;
-        int uvHeight = height / 2;
         ByteBuffer uBuf = planes[1].getBuffer();
         ByteBuffer vBuf = planes[2].getBuffer();
         int uRowStride = planes[1].getRowStride();
@@ -2582,15 +2572,108 @@ public final class Camera2SessionHook {
         int vPixelStride = planes[2].getPixelStride();
         byte[] uSrc = yuv.uPlane;
         byte[] vSrc = yuv.vPlane;
-        int yuvUvWidth = yuv.width / 2;
-
         uBuf.clear();
         vBuf.clear();
-        for (int r = 0; r < uvHeight; r++) {
-            int srcOffset = r * yuvUvWidth;
-            for (int c = 0; c < uvWidth; c++) {
-                uBuf.put(r * uRowStride + c * uPixelStride, uSrc[srcOffset + c]);
-                vBuf.put(r * vRowStride + c * vPixelStride, vSrc[srcOffset + c]);
+
+        int uvW = imgW / 2;
+        int uvH = imgH / 2;
+        int srcUvW = srcW / 2;
+        int srcUvH = srcH / 2;
+
+        if (userRotation == 0) {
+            int width = Math.min(imgW, srcW);
+            int height = Math.min(imgH, srcH);
+            for (int r = 0; r < height; r++) {
+                yBuf.position(r * yRowStride);
+                int srcOffset = r * srcW;
+                if (yPixelStride == 1) {
+                    yBuf.put(ySrc, srcOffset, width);
+                } else {
+                    for (int c = 0; c < width; c++) {
+                        yBuf.put(r * yRowStride + c * yPixelStride, ySrc[srcOffset + c]);
+                    }
+                }
+            }
+            int uvWidth = width / 2;
+            int uvHeight = height / 2;
+            for (int r = 0; r < uvHeight; r++) {
+                int srcOffset = r * srcUvW;
+                for (int c = 0; c < uvWidth; c++) {
+                    uBuf.put(r * uRowStride + c * uPixelStride, uSrc[srcOffset + c]);
+                    vBuf.put(r * vRowStride + c * vPixelStride, vSrc[srcOffset + c]);
+                }
+            }
+        } else if (userRotation == 90) {
+            int width = Math.min(imgW, srcH);
+            int height = Math.min(imgH, srcW);
+            for (int r = 0; r < height; r++) {
+                for (int c = 0; c < width; c++) {
+                    int srcR = srcH - 1 - c;
+                    int srcC = r;
+                    if (srcR >= 0 && srcR < srcH && srcC >= 0 && srcC < srcW) {
+                        yBuf.put(r * yRowStride + c * yPixelStride, ySrc[srcR * srcW + srcC]);
+                    }
+                }
+            }
+            int uvWidth = width / 2;
+            int uvHeight = height / 2;
+            for (int r = 0; r < uvHeight; r++) {
+                for (int c = 0; c < uvWidth; c++) {
+                    int srcR = srcUvH - 1 - c;
+                    int srcC = r;
+                    if (srcR >= 0 && srcR < srcUvH && srcC >= 0 && srcC < srcUvW) {
+                        uBuf.put(r * uRowStride + c * uPixelStride, uSrc[srcR * srcUvW + srcC]);
+                        vBuf.put(r * vRowStride + c * vPixelStride, vSrc[srcR * srcUvW + srcC]);
+                    }
+                }
+            }
+        } else if (userRotation == 180) {
+            int width = Math.min(imgW, srcW);
+            int height = Math.min(imgH, srcH);
+            for (int r = 0; r < height; r++) {
+                int srcR = srcH - 1 - r;
+                for (int c = 0; c < width; c++) {
+                    int srcC = srcW - 1 - c;
+                    if (srcR >= 0 && srcR < srcH && srcC >= 0 && srcC < srcW) {
+                        yBuf.put(r * yRowStride + c * yPixelStride, ySrc[srcR * srcW + srcC]);
+                    }
+                }
+            }
+            int uvWidth = width / 2;
+            int uvHeight = height / 2;
+            for (int r = 0; r < uvHeight; r++) {
+                int srcR = srcUvH - 1 - r;
+                for (int c = 0; c < uvWidth; c++) {
+                    int srcC = srcUvW - 1 - c;
+                    if (srcR >= 0 && srcR < srcUvH && srcC >= 0 && srcC < srcUvW) {
+                        uBuf.put(r * uRowStride + c * uPixelStride, uSrc[srcR * srcUvW + srcC]);
+                        vBuf.put(r * vRowStride + c * vPixelStride, vSrc[srcR * srcUvW + srcC]);
+                    }
+                }
+            }
+        } else if (userRotation == 270) {
+            int width = Math.min(imgW, srcH);
+            int height = Math.min(imgH, srcW);
+            for (int r = 0; r < height; r++) {
+                for (int c = 0; c < width; c++) {
+                    int srcR = c;
+                    int srcC = srcW - 1 - r;
+                    if (srcR >= 0 && srcR < srcH && srcC >= 0 && srcC < srcW) {
+                        yBuf.put(r * yRowStride + c * yPixelStride, ySrc[srcR * srcW + srcC]);
+                    }
+                }
+            }
+            int uvWidth = width / 2;
+            int uvHeight = height / 2;
+            for (int r = 0; r < uvHeight; r++) {
+                for (int c = 0; c < uvWidth; c++) {
+                    int srcR = c;
+                    int srcC = srcUvW - 1 - r;
+                    if (srcR >= 0 && srcR < srcUvH && srcC >= 0 && srcC < srcUvW) {
+                        uBuf.put(r * uRowStride + c * uPixelStride, uSrc[srcR * srcUvW + srcC]);
+                        vBuf.put(r * vRowStride + c * vPixelStride, vSrc[srcR * srcUvW + srcC]);
+                    }
+                }
             }
         }
     }

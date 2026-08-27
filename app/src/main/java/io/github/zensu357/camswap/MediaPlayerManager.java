@@ -487,19 +487,20 @@ public final class MediaPlayerManager {
             // 预览渲染器旋转固定为 0°：应用（如 WhatsApp、LINE）会对预览自行应用相机传感器旋转，
             // CamSwap 不应再叠加旋转，否则本机画面会被双重旋转。
             // video_rotation_offset 仅在 YUV 截帧时通过 captureFrameForYuv 应用，确保对方画面正确。
+            int rotation = VideoManager.getConfig().getInt(ConfigManager.KEY_VIDEO_ROTATION_OFFSET, 0);
             rendererRef[0] = GLVideoRenderer.createSafely(targetSurface, tag);
             if (rendererRef[0] != null) {
                 player.setSurface(rendererRef[0].getInputSurface());
-                rendererRef[0].setRotation(0);
-                LogUtil.log("【CS】【GL】[" + tag + "] 成功挂载 GL 渲染器 (旋转:0°, InputSurface: "
+                rendererRef[0].setRotation(rotation);
+                LogUtil.log("【CS】【GL】[" + tag + "] 成功挂载 GL 渲染器 (旋转:" + rotation + "°, InputSurface: "
                         + rendererRef[0].getInputSurface() + ")");
             } else {
                 LogUtil.w("【CS】【Relay】[" + tag + "] GL 渲染器创建失败，尝试回退到 SurfaceTexture 中继");
                 relayRef[0] = SurfaceRelay.createSafely(targetSurface, tag);
                 if (relayRef[0] != null) {
                     player.setSurface(relayRef[0].getInputSurface());
-                    relayRef[0].setRotation(0);
-                    LogUtil.log("【CS】【Relay】[" + tag + "] 挂载 Relay 渲染器成功 (旋转:0°)");
+                    relayRef[0].setRotation(rotation);
+                    LogUtil.log("【CS】【Relay】[" + tag + "] 挂载 Relay 渲染器成功 (旋转:" + rotation + "°)");
                 } else {
                     player.setSurface(targetSurface);
                     LogUtil.w("【CS】【播放器】[" + tag + "] 回退到直接绑定 TargetSurface（无 GL/Relay 加速）");
