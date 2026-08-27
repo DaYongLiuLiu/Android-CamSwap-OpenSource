@@ -289,18 +289,28 @@ public class Camera1Handler implements ICameraHandler {
             }
         });
 
+        HookMain.playerManager.mMediaPlayer.setOnErrorListener((mp, what, extra) -> {
+            String err = LogUtil.explainMediaPlayerError(what, extra);
+            LogUtil.e("【CS】【Camera1】【致命错误】mMediaPlayer 触发错误: " + err, null);
+            return true;
+        });
+
         try {
             android.os.ParcelFileDescriptor pfd = HookMain.getVideoPFD();
+            String path = VideoManager.getCurrentVideoPath();
             if (pfd != null) {
                 HookMain.playerManager.bindCamera1Pfd(HookMain.playerManager.mMediaPlayer, pfd);
                 HookMain.playerManager.mMediaPlayer.setDataSource(pfd.getFileDescriptor());
+                LogUtil.log("【CS】【Camera1】mMediaPlayer 使用 PFD 数据源: fd=" + pfd.getFd());
             } else {
                 HookMain.playerManager.closeCamera1Pfd(HookMain.playerManager.mMediaPlayer);
-                HookMain.playerManager.mMediaPlayer.setDataSource(VideoManager.getCurrentVideoPath());
+                HookMain.playerManager.mMediaPlayer.setDataSource(path);
+                LogUtil.log("【CS】【Camera1】mMediaPlayer 使用本地数据源: " + path);
             }
             HookMain.playerManager.mMediaPlayer.prepare();
+            LogUtil.log("【CS】【Camera1】mMediaPlayer 准备就绪，开始播放");
         } catch (Exception e) {
-            LogUtil.log("【CS】mMediaPlayer prepare 异常: " + e.toString());
+            LogUtil.e("【CS】【Camera1】mMediaPlayer prepare 异常: " + e.getMessage(), e);
         }
     }
 

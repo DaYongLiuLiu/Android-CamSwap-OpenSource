@@ -107,9 +107,10 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
                 initEGL(targetSurface);
                 initGL();
                 mInitialized = true;
-                LogUtil.log("【CS】【GL】" + mTag + " 初始化成功");
+                LogUtil.log("【CS】【GL】[" + mTag + "] 渲染管线初始化成功！(EGL Surface 尺寸: "
+                        + mSurfaceWidth + "x" + mSurfaceHeight + ", InputSurface: " + mInputSurface + ")");
             } catch (Exception e) {
-                LogUtil.log("【CS】【GL】" + mTag + " 初始化失败: " + e);
+                LogUtil.e("【CS】【GL】【致命错误】[" + mTag + "] 初始化失败: " + e.getMessage(), e);
                 mInitialized = false;
             }
             latch.countDown();
@@ -117,10 +118,10 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
 
         try {
             if (!latch.await(3000, TimeUnit.MILLISECONDS)) {
-                LogUtil.log("【CS】【GL】" + mTag + " 初始化超时");
+                LogUtil.w("【CS】【GL】【超时】[" + mTag + "] EGL 线程初始化超时 (3000ms)");
             }
         } catch (InterruptedException e) {
-            LogUtil.log("【CS】【GL】" + mTag + " 初始化被中断");
+            LogUtil.w("【CS】【GL】[" + mTag + "] 初始化被中断: " + e.getMessage());
         }
     }
 
@@ -166,21 +167,30 @@ public class GLVideoRenderer implements SurfaceTexture.OnFrameAvailableListener 
             return;
         // Bail out if the target surface has been destroyed to avoid native crash
         if (mTargetSurface != null && !mTargetSurface.isValid()) {
-            LogUtil.log("【CS】【GL】" + mTag + " target surface 已失效，停止渲染");
+            LogUtil.w("【CS】【GL】[" + mTag + "] 目标 TargetSurface 已失效 (isValid=false)，停止 GPU 渲染");
             mReleased = true;
             return;
         }
         try {
             renderToBackBuffer();
+            mFrameCount++;
+            if (mFrameCount == 1) {
+                LogUtil.log("【CS】【GL】[" + mTag + "] 接收到第 1 帧纹理并在 GPU 完成绘制上屏！");
+            } else if (mFrameCount % 100 == 0) {
+                LogUtil.log("【CS】【GL】[" + mTag + "] 持续渲染正常：已稳定输出 " + mFrameCount + " 帧");
+            }
+
             if (!EGL14.eglSwapBuffers(mEGLDisplay, mEGLSurface)) {
                 int err = EGL14.eglGetError();
-                LogUtil.log("【CS】【GL】" + mTag + " eglSwapBuffers 失败, err=" + err);
+                String errExplanation = LogUtil.explainEglError(err);
+                LogUtil.e("【CS】【GL】[" + mTag + "] eglSwapBuffers 提交帧缓冲失败: "
+                        + errExplanation + " (errCode=" + err + ")", null);
                 if (err == EGL14.EGL_BAD_SURFACE || err == EGL14.EGL_BAD_NATIVE_WINDOW) {
                     mReleased = true;
                 }
             }
         } catch (Exception e) {
-            LogUtil.log("【CS】【GL】" + mTag + " drawFrame 异常: " + e);
+            LogUtil.e("【CS】【GL】[" + mTag + "] drawFrame 渲染发生异常: " + e.getMessage(), e);
         }
     }
 

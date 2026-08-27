@@ -90,6 +90,27 @@ final class MediaCodecYuvDecoder {
         return latestFrame;
     }
 
+    /** 将当前解码出的 YUV 帧合成为标准的 NV21 (Y...VU...) 字节流 */
+    public byte[] acquireLatestNv21Frame() {
+        YuvFrame frame = latestFrame;
+        if (frame == null || frame.yPlane == null || frame.uPlane == null || frame.vPlane == null) {
+            return null;
+        }
+        int yLen = frame.yPlane.length;
+        int uLen = frame.uPlane.length;
+        int vLen = frame.vPlane.length;
+        byte[] nv21 = new byte[yLen + uLen + vLen];
+        System.arraycopy(frame.yPlane, 0, nv21, 0, yLen);
+        int uvIndex = yLen;
+        for (int i = 0; i < vLen; i++) {
+            nv21[uvIndex++] = frame.vPlane[i];
+            if (i < uLen) {
+                nv21[uvIndex++] = frame.uPlane[i];
+            }
+        }
+        return nv21;
+    }
+
     int getVideoWidth() { return videoWidth; }
     int getVideoHeight() { return videoHeight; }
     int getVideoRotation() { return videoRotation; }
@@ -159,8 +180,9 @@ final class MediaCodecYuvDecoder {
             decoder.configure(format, null, null, 0);
             decoder.start();
 
-            LogUtil.log("【CS】YuvDecoder 启动: " + videoWidth + "x" + videoHeight
-                    + "@" + videoFrameRate + "fps rot=" + videoRotation);
+            LogUtil.log("【CS】【YUV解码器】硬件解码器启动成功！(名称: " + decoder.getName()
+                    + ", MIME: " + mime + ", 视频规格: " + videoWidth + "x" + videoHeight
+                    + " @" + videoFrameRate + "fps, 旋转角: " + videoRotation + "°)");
 
             decodeFrames(decoder, extractor);
 

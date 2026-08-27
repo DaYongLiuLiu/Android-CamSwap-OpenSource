@@ -75,9 +75,13 @@ public final class Camera2SessionHook {
     // Tracker for Photo Fake
     public final Set<Surface> trackedReaderSurfaces = Collections
             .newSetFromMap(new ConcurrentHashMap<Surface, Boolean>());
+    public final Set<Long> trackedReaderNativeHandles = Collections
+            .newSetFromMap(new ConcurrentHashMap<Long, Boolean>());
     public final Map<Surface, ImageWriter> imageWriterMap = new ConcurrentHashMap<>();
     public final Map<Surface, Integer> surfaceFormatMap = new ConcurrentHashMap<>();
+    public final Map<Long, Integer> surfaceNativeFormatMap = new ConcurrentHashMap<>();
     public final Map<Surface, int[]> surfaceSizeMap = new ConcurrentHashMap<>();
+    public final Map<Long, int[]> surfaceNativeSizeMap = new ConcurrentHashMap<>();
     private final Map<Surface, CachedYuvFrame> cachedYuvFrameMap = new ConcurrentHashMap<>();
     private final Map<Surface, FakeYuvBridge> fakeYuvBridgeMap = new ConcurrentHashMap<>();
     private final Set<Surface> internalFakeYuvReaderSurfaces = Collections
@@ -120,7 +124,7 @@ public final class Camera2SessionHook {
     volatile boolean pendingPlayback = false;
     private volatile boolean yuvBridgeSessionReady = false;
     /** MediaCodec 直出 YUV 解码器，绕过 GL→Bitmap→RGB→YUV 转换链 */
-    private volatile MediaCodecYuvDecoder yuvDecoder;
+    public volatile MediaCodecYuvDecoder yuvDecoder;
 
     // Surface-change tracking: skip redundant initCamera2Players when surfaces unchanged
     private Surface lastInitReader, lastInitReader1, lastInitPreview, lastInitPreview1;
@@ -155,6 +159,8 @@ public final class Camera2SessionHook {
         return createVirtualSurface(0);
     }
 
+    public final Map<Long, Surface> originalNativeToVirtualMap = new ConcurrentHashMap<>();
+
     /** Get the matched virtual surface for the original target surface. */
     public Surface getVirtualSurfaceFor(Surface originalSurface) {
         if (originalSurface != null) {
@@ -162,8 +168,24 @@ public final class Camera2SessionHook {
             if (vs != null && vs.isValid()) {
                 return vs;
             }
+            long handle = getSurfaceNativeHandle(originalSurface);
+            if (handle != 0L) {
+                vs = originalNativeToVirtualMap.get(handle);
+                if (vs != null && vs.isValid()) {
+                    return vs;
+                }
+            }
+            // 如果会话中已经有明确的映射规则，但该 Surface 未被重定向（说明被保留为真实会话目标），
+            // 则绝不能强行返回 virtualSurface，必须返回 null 以保持原始输出！
+            if (!originalToVirtualMap.isEmpty() || !originalNativeToVirtualMap.isEmpty()) {
+                return null;
+            }
+            // 若会话尚未建立或无映射且该 Surface 是明显的预览 SurfaceTexture，才兜底生成 virtualSurface
+            if (isSurfaceTextureSurface(originalSurface)) {
+                return getVirtualSurface();
+            }
         }
-        return getVirtualSurface();
+        return null;
     }
 
     /** Mark virtual surface for recreation on next session creation. */
@@ -199,11 +221,11 @@ public final class Camera2SessionHook {
         currentActivityClassName = activityClassName;
     }
 
-    private boolean isWhatsAppPackage(String packageName) {
+    public static boolean isWhatsAppPackage(String packageName) {
         return packageName != null && packageName.toLowerCase(Locale.ROOT).contains("whatsapp");
     }
 
-    private boolean isLinePackage(String packageName) {
+    public static boolean isLinePackage(String packageName) {
         if (packageName == null || packageName.isEmpty()) {
             return false;
         }
@@ -212,13 +234,24 @@ public final class Camera2SessionHook {
                 || normalized.startsWith("jp.naver.line.android:");
     }
 
-    private boolean shouldUseFakeYuvBridgeForPackage(String packageName) {
+    public static boolean shouldUseFakeYuvBridgeForPackage(String packageName) {
         return isWhatsAppPackage(packageName) || isLinePackage(packageName);
     }
 
     private boolean isVoipActivity() {
+        if (currentActivityClassName == null) {
+            return false;
+        }
+        String lower = currentActivityClassName.toLowerCase(Locale.ROOT);
+        return lower.contains("voipserviceactivity")
+                || lower.contains("freecall")
+                || lower.contains("groupcall")
+                || lower.contains("voip2");
+    }
+
+    private boolean isLineScannerActivity() {
         return currentActivityClassName != null
-                && currentActivityClassName.contains("VoIPServiceActivity");
+                && currentActivityClassName.contains("CameraScannerActivity");
     }
 
     private boolean shouldUseYuvPumpForSurface(Surface surface) {
@@ -231,7 +264,7 @@ public final class Camera2SessionHook {
         return isCurrentSessionYuvReaderSurface(surface);
     }
 
-    private String getCurrentPackageName() {
+    public String getCurrentPackageName() {
         if (currentPackageName != null && !currentPackageName.isEmpty()) {
             return currentPackageName;
         }
@@ -370,17 +403,26 @@ public final class Camera2SessionHook {
     public void startPlayback() {
         if (readerSurface == null && readerSurface1 == null
                 && previewSurface == null && previewSurface1 == null) {
-            LogUtil.log("【CS】延迟播放：所有 surface 为空，等待 addTarget");
+            LogUtil.w("【CS】【SessionHook】【延迟播放】所有播放目标 Surface 均为 null，等待 addTarget 分发..."
+                    + " [preview=" + previewSurface + ", preview1=" + previewSurface1
+                    + ", reader=" + readerSurface + ", reader1=" + readerSurface1 + "]");
             pendingPlayback = true;
             return;
         }
         // Skip redundant init when surfaces haven't changed since last call
         if (readerSurface == lastInitReader && readerSurface1 == lastInitReader1
                 && previewSurface == lastInitPreview && previewSurface1 == lastInitPreview1) {
-            LogUtil.log("【CS】跳过重复 startPlayback：surface 未变化");
+            LogUtil.log("【CS】【SessionHook】跳过重复 startPlayback：所有 Surface 均未发生改变");
             pendingPlayback = false;
             return;
         }
+
+        LogUtil.log("【CS】【SessionHook】[触发播放] Camera2 播放器装载 ->"
+                + " preview: " + previewSurface + " (isValid=" + (previewSurface != null && previewSurface.isValid()) + ")"
+                + ", preview1: " + previewSurface1 + " (isValid=" + (previewSurface1 != null && previewSurface1.isValid()) + ")"
+                + ", reader: " + readerSurface + " (isValid=" + (readerSurface != null && readerSurface.isValid()) + ")"
+                + ", reader1: " + readerSurface1 + " (isValid=" + (readerSurface1 != null && readerSurface1.isValid()) + ")");
+
         lastInitReader = readerSurface;
         lastInitReader1 = readerSurface1;
         lastInitPreview = previewSurface;
@@ -389,16 +431,39 @@ public final class Camera2SessionHook {
         playerManager.initCamera2Players(readerSurface, readerSurface1,
                 previewSurface, previewSurface1);
         markYuvBridgeSessionReadyIfPossible();
+        startContinuousYuvPumper();
 
-        // WhatsApp 视频通话：预览渲染器旋转设为 0°，让本机自拍画面方向正确。
+        // WhatsApp / LINE 视频通话：预览渲染器旋转设为 0°，让本机自拍画面方向正确。
         // YUV 截帧时通过 captureFrameWithRotation 单独应用 video_rotation_offset，
         // 确保对方看到正确方向。
-        if (isWhatsAppPackage(getCurrentPackageName()) && !whatsappYuvPumpMap.isEmpty()) {
+        if ((isWhatsAppPackage(getCurrentPackageName()) || isLinePackage(getCurrentPackageName()))
+                && !whatsappYuvPumpMap.isEmpty()) {
             MediaPlayerManager pm = HookMain.playerManager;
             if (pm.c2_renderer != null) pm.c2_renderer.setRotation(0);
             if (pm.c2_renderer_1 != null) pm.c2_renderer_1.setRotation(0);
-            LogUtil.log("【CS】WhatsApp 视频通话：预览渲染器旋转已设为 0°");
+            LogUtil.log("【CS】【SessionHook】VoIP 视频通话：预览渲染器旋转已固定为 0°");
         }
+    }
+
+    public static long getSurfaceNativeHandle(Surface surface) {
+        if (surface == null) return 0L;
+        try {
+            java.lang.reflect.Field field = Surface.class.getDeclaredField("mNativeObject");
+            field.setAccessible(true);
+            return field.getLong(surface);
+        } catch (Throwable t) {
+            try {
+                String str = surface.toString();
+                int idx = str.indexOf("mNativeObject=");
+                if (idx != -1) {
+                    int end = str.indexOf(")", idx);
+                    if (end != -1) {
+                        return Long.parseLong(str.substring(idx + 14, end).trim());
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        return 0L;
     }
 
     public void registerImageReaderSurface(Surface surface, int format, int width, int height) {
@@ -408,15 +473,40 @@ public final class Camera2SessionHook {
         trackedReaderSurfaces.add(surface);
         surfaceFormatMap.put(surface, format);
         surfaceSizeMap.put(surface, new int[] { width, height });
+
+        long handle = getSurfaceNativeHandle(surface);
+        if (handle != 0L) {
+            trackedReaderNativeHandles.add(handle);
+            surfaceNativeFormatMap.put(handle, format);
+            surfaceNativeSizeMap.put(handle, new int[] { width, height });
+        }
     }
 
     public boolean isTrackedReaderSurface(Surface surface) {
-        return surface != null && trackedReaderSurfaces.contains(surface);
+        if (surface == null) return false;
+        if (trackedReaderSurfaces.contains(surface)) return true;
+        long handle = getSurfaceNativeHandle(surface);
+        return handle != 0L && trackedReaderNativeHandles.contains(handle);
     }
 
     public boolean isJpegReaderSurface(Surface surface) {
+        if (surface == null) return false;
         Integer format = surfaceFormatMap.get(surface);
+        if (format == null) {
+            long handle = getSurfaceNativeHandle(surface);
+            if (handle != 0L) format = surfaceNativeFormatMap.get(handle);
+        }
         return format != null && format == ImageFormat.JPEG;
+    }
+
+    public boolean isYuvReaderSurface(Surface surface) {
+        if (surface == null) return false;
+        Integer format = surfaceFormatMap.get(surface);
+        if (format == null) {
+            long handle = getSurfaceNativeHandle(surface);
+            if (handle != 0L) format = surfaceNativeFormatMap.get(handle);
+        }
+        return format != null && format == ImageFormat.YUV_420_888;
     }
 
     public boolean shouldKeepRealReaderSurface(Surface surface) {
@@ -511,11 +601,6 @@ public final class Camera2SessionHook {
 
     public boolean shouldUseReaderPlaybackSurfaceForPackage(String packageName) {
         return !shouldUseFakeYuvBridgeForPackage(packageName);
-    }
-
-    public boolean isYuvReaderSurface(Surface surface) {
-        Integer format = surfaceFormatMap.get(surface);
-        return format != null && format == ImageFormat.YUV_420_888;
     }
 
     private Surface getOutputSurface(Object output) {
@@ -657,6 +742,7 @@ public final class Camera2SessionHook {
         }
         virtualTextures.clear();
         originalToVirtualMap.clear();
+        originalNativeToVirtualMap.clear();
     }
 
     private synchronized Surface createVirtualSurface(int index) {
@@ -699,18 +785,30 @@ public final class Camera2SessionHook {
             for (Object output : outputs) {
                 if (output instanceof Surface) {
                     Surface surface = (Surface) output;
-                    if (shouldKeepRealReaderSurfaceForPackage(surface, packageName)
-                            || shouldKeepYuvReaderSurfaceForPackage(surface, packageName)) {
-                        rewritten.add(surface);
-                        if (shouldKeepYuvReaderSurfaceForPackage(surface, packageName)) {
-                            sessionKeptYuvSurfaces.add(surface);
-                            LogUtil.log("【CS】SessionSurfaces 保留 YUV reader surface: " + surface);
-                        }
-                    } else {
+                    boolean isJpeg = isJpegReaderSurface(surface);
+                    boolean isYuv = isYuvReaderSurface(surface) || shouldKeepYuvReaderSurfaceForPackage(surface, packageName);
+                    boolean isPreview = (virtualIndex == 0 && !isJpeg);
+
+                    if (isPreview) {
                         Surface vSurface = createVirtualSurface(virtualIndex++);
                         originalToVirtualMap.put(surface, vSurface);
+                        long handle = getSurfaceNativeHandle(surface);
+                        if (handle != 0L) originalNativeToVirtualMap.put(handle, vSurface);
+                        rememberPreviewSurface(surface);
                         rewritten.add(vSurface);
-                        LogUtil.log("【CS】SessionSurfaces 替换预览 Surface -> virtual[" + (virtualIndex - 1) + "]: " + surface);
+                        LogUtil.log("【CS】SessionSurfaces 替换主预览 Surface -> virtual[0]: " + surface);
+                    } else if (isYuv) {
+                        Surface vSurface = createVirtualSurface(virtualIndex++);
+                        originalToVirtualMap.put(surface, vSurface);
+                        long handle = getSurfaceNativeHandle(surface);
+                        if (handle != 0L) originalNativeToVirtualMap.put(handle, vSurface);
+                        rememberReaderPlaybackSurface(surface);
+                        sessionKeptYuvSurfaces.add(surface);
+                        rewritten.add(vSurface);
+                        LogUtil.log("【CS】SessionSurfaces [方案一替身置换] 替换 YUV Reader Surface -> virtual[" + (virtualIndex - 1) + "]: " + surface);
+                    } else {
+                        rewritten.add(surface);
+                        LogUtil.log("【CS】SessionSurfaces 保留真实辅助/JPEG Surface: " + surface);
                     }
                 }
             }
@@ -719,6 +817,64 @@ public final class Camera2SessionHook {
             rewritten.add(createVirtualSurface(0));
         }
         return new ArrayList<>(rewritten);
+    }
+
+    public boolean isSurfaceTextureSurface(Surface surface) {
+        if (surface == null) return false;
+        String s = surface.toString();
+        return s.contains("SurfaceTexture") || s.contains("SurfaceView") || s.contains("SurfaceHolder");
+    }
+
+    private List<OutputConfiguration> rewriteOutputConfigurations(List<?> outputs) {
+        return rewriteOutputConfigurations(outputs, getCurrentPackageName());
+    }
+
+    private List<OutputConfiguration> rewriteOutputConfigurations(List<?> outputs, String packageName) {
+        List<OutputConfiguration> rewritten = new ArrayList<>();
+        sessionKeptYuvSurfaces.clear();
+        int virtualIndex = 0;
+        if (outputs != null) {
+            for (Object output : outputs) {
+                if (!(output instanceof OutputConfiguration)) {
+                    continue;
+                }
+                OutputConfiguration config = (OutputConfiguration) output;
+                Surface originalSurface = config.getSurface();
+                boolean isJpeg = isJpegReaderSurface(originalSurface);
+                boolean isYuv = isYuvReaderSurface(originalSurface) || shouldKeepYuvReaderSurfaceForPackage(originalSurface, packageName);
+                boolean isPreview = (virtualIndex == 0 && !isJpeg);
+
+                if (isPreview) {
+                    Surface vSurface = createVirtualSurface(virtualIndex++);
+                    if (originalSurface != null) {
+                        originalToVirtualMap.put(originalSurface, vSurface);
+                        long handle = getSurfaceNativeHandle(originalSurface);
+                        if (handle != 0L) originalNativeToVirtualMap.put(handle, vSurface);
+                        rememberPreviewSurface(originalSurface);
+                    }
+                    rewritten.add(createOutputConfiguration(config, vSurface, packageName));
+                    LogUtil.log("【CS】OutputConfig 替换主预览 Surface -> virtual[0]: " + originalSurface);
+                } else if (isYuv) {
+                    Surface vSurface = createVirtualSurface(virtualIndex++);
+                    if (originalSurface != null) {
+                        originalToVirtualMap.put(originalSurface, vSurface);
+                        long handle = getSurfaceNativeHandle(originalSurface);
+                        if (handle != 0L) originalNativeToVirtualMap.put(handle, vSurface);
+                        rememberReaderPlaybackSurface(originalSurface);
+                        sessionKeptYuvSurfaces.add(originalSurface);
+                    }
+                    rewritten.add(createOutputConfiguration(config, vSurface, packageName));
+                    LogUtil.log("【CS】OutputConfig [方案一替身置换] 替换 YUV Reader Surface -> virtual[" + (virtualIndex - 1) + "]: " + originalSurface);
+                } else {
+                    rewritten.add(createOutputConfiguration(config, originalSurface, packageName));
+                    LogUtil.log("【CS】OutputConfig 保留真实辅助/JPEG Surface: " + originalSurface);
+                }
+            }
+        }
+        if (rewritten.isEmpty()) {
+            rewritten.add(new OutputConfiguration(createVirtualSurface(0)));
+        }
+        return rewritten;
     }
 
     private OutputConfiguration createOutputConfiguration(OutputConfiguration original, Surface surface,
@@ -814,44 +970,6 @@ public final class Camera2SessionHook {
             }
         } catch (Throwable ignored) {
         }
-    }
-
-    private List<OutputConfiguration> rewriteOutputConfigurations(List<?> outputs) {
-        return rewriteOutputConfigurations(outputs, getCurrentPackageName());
-    }
-
-    private List<OutputConfiguration> rewriteOutputConfigurations(List<?> outputs, String packageName) {
-        List<OutputConfiguration> rewritten = new ArrayList<>();
-        sessionKeptYuvSurfaces.clear();
-        int virtualIndex = 0;
-        if (outputs != null) {
-            for (Object output : outputs) {
-                if (!(output instanceof OutputConfiguration)) {
-                    continue;
-                }
-                OutputConfiguration config = (OutputConfiguration) output;
-                Surface originalSurface = config.getSurface();
-                if (shouldKeepRealReaderSurfaceForPackage(originalSurface, packageName)
-                        || shouldKeepYuvReaderSurfaceForPackage(originalSurface, packageName)) {
-                    rewritten.add(createOutputConfiguration(config, originalSurface, packageName));
-                    if (shouldKeepYuvReaderSurfaceForPackage(originalSurface, packageName)) {
-                        sessionKeptYuvSurfaces.add(originalSurface);
-                        LogUtil.log("【CS】OutputConfig 保留 YUV reader surface: " + originalSurface);
-                    }
-                } else {
-                    Surface vSurface = createVirtualSurface(virtualIndex++);
-                    if (originalSurface != null) {
-                        originalToVirtualMap.put(originalSurface, vSurface);
-                    }
-                    rewritten.add(createOutputConfiguration(config, vSurface, packageName));
-                    LogUtil.log("【CS】OutputConfig 替换预览 Surface -> virtual[" + (virtualIndex - 1) + "]: " + originalSurface);
-                }
-            }
-        }
-        if (rewritten.isEmpty()) {
-            rewritten.add(new OutputConfiguration(createVirtualSurface(0)));
-        }
-        return rewritten;
     }
 
     private SessionConfiguration rewriteSessionConfiguration(SessionConfiguration sessionConfiguration) {
@@ -1172,8 +1290,10 @@ public final class Camera2SessionHook {
         if (clearTrackedReaders) {
             isReleasing = true;
             stopAllWhatsAppYuvPumps();
+            stopContinuousYuvPumper();
         } else {
             stopAllWhatsAppYuvPumps();
+            stopContinuousYuvPumper();
         }
         for (ImageWriter writer : imageWriterMap.values()) {
             try {
@@ -1207,7 +1327,14 @@ public final class Camera2SessionHook {
         }
         ImageReader imageReader = (ImageReader) imageReaderObj;
         Surface surface = imageReader.getSurface();
-        if (!shouldKeepYuvReaderSurfaceForCurrentPackage(surface)) {
+        boolean isYuv = false;
+        try {
+            isYuv = imageReader.getImageFormat() == ImageFormat.YUV_420_888;
+        } catch (Throwable ignored) {
+        }
+        String pkg = getCurrentPackageName();
+        boolean isTargetPkg = isWhatsAppPackage(pkg) || isLinePackage(pkg);
+        if (!isYuv || !isTargetPkg) {
             stopWhatsAppYuvPump(imageReader);
             return;
         }
@@ -1383,10 +1510,7 @@ public final class Camera2SessionHook {
     }
 
     public Image acquireFakeWhatsAppYuvImage(Object imageReader, Surface targetSurface) {
-        if (isReleasing || targetSurface == null || !shouldKeepYuvReaderSurfaceForCurrentPackage(targetSurface)
-                || !isCurrentSessionYuvReaderSurface(targetSurface)
-                || !isYuvReaderSurface(targetSurface)
-                || !shouldDriveYuvBridgeNow()) {
+        if (isReleasing || targetSurface == null) {
             return null;
         }
         int width = 0;
@@ -1407,7 +1531,8 @@ public final class Camera2SessionHook {
             }
         }
         if (width <= 0 || height <= 0) {
-            return null;
+            width = 1920;
+            height = 1080;
         }
 
         // 缓存由泵线程 preRefreshYuvCache 预先刷新，这里只读取
@@ -1933,6 +2058,10 @@ public final class Camera2SessionHook {
                     return;
                 }
                 long startMs = SystemClock.elapsedRealtime();
+                try {
+                    pumpDirectYuvFrame(imageReader.getSurface());
+                } catch (Throwable ignored) {
+                }
                 preRefreshYuvCache(YuvCallbackPump.this);
                 dispatchWhatsAppYuvCallback(YuvCallbackPump.this);
                 long elapsed = SystemClock.elapsedRealtime() - startMs;
@@ -2292,20 +2421,13 @@ public final class Camera2SessionHook {
         }
         try {
             Surface surface = ((ImageReader) imageReader).getSurface();
-            if (!shouldKeepRealReaderSurface(surface) || !pendingJpegSurfaces.contains(surface)) {
-                return false;
-            }
             if (image.getPlanes() == null || image.getPlanes().length == 0) {
                 LogUtil.log("【CS】JPEG Image 无可写 Plane，放弃替换");
                 return false;
             }
             ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-            if (buffer == null) {
-                LogUtil.log("【CS】JPEG Plane Buffer 为 null，放弃替换");
-                return false;
-            }
-            if (buffer.isReadOnly()) {
-                LogUtil.log("【CS】JPEG Plane Buffer 只读，放弃替换");
+            if (buffer == null || buffer.isReadOnly()) {
+                LogUtil.log("【CS】JPEG Plane Buffer 不可用或只读，放弃替换");
                 return false;
             }
 
@@ -2319,7 +2441,7 @@ public final class Camera2SessionHook {
             buffer.flip();
             pendingJpegSurfaces.remove(surface);
             pendingPhotoSurface = null;
-            LogUtil.log("【CS】已替换 JPEG ImageReader 输出: " + surface + " 大小=" + jpegBytes.length);
+            LogUtil.log("【CS】成功替换 JPEG 拍照照片为当前虚拟画面: 大小=" + jpegBytes.length + " 字节");
             return true;
         } catch (Exception e) {
             LogUtil.log("【CS】替换 JPEG Image 失败: " + e);
@@ -2327,11 +2449,156 @@ public final class Camera2SessionHook {
         }
     }
 
+    private volatile boolean isYuvPumperRunning = false;
+    private final Runnable yuvContinuousPumpRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isYuvPumperRunning || isReleasing) {
+                return;
+            }
+            long startMs = SystemClock.elapsedRealtime();
+            try {
+                for (Surface surface : sessionKeptYuvSurfaces) {
+                    if (surface != null && surface.isValid()) {
+                        pumpDirectYuvFrame(surface);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            long elapsed = SystemClock.elapsedRealtime() - startMs;
+            long delay = Math.max(10L, 33L - elapsed);
+            if (whatsappYuvPumpHandler != null && isYuvPumperRunning) {
+                whatsappYuvPumpHandler.postDelayed(this, delay);
+            }
+        }
+    };
+
+    public void startContinuousYuvPumper() {
+        if (isYuvPumperRunning) return;
+        isYuvPumperRunning = true;
+        ensureWhatsAppYuvPumpHandler();
+        if (whatsappYuvPumpHandler != null) {
+            whatsappYuvPumpHandler.post(yuvContinuousPumpRunnable);
+            LogUtil.log("【CS】30fps 持续 YUV 推送定时器已启动");
+        }
+    }
+
+    public void stopContinuousYuvPumper() {
+        isYuvPumperRunning = false;
+        if (whatsappYuvPumpHandler != null) {
+            whatsappYuvPumpHandler.removeCallbacks(yuvContinuousPumpRunnable);
+        }
+    }
+
+    private final java.util.concurrent.atomic.AtomicLong lastMonotonicPtsNs =
+            new java.util.concurrent.atomic.AtomicLong(SystemClock.elapsedRealtimeNanos());
+
+    public long getNextMonotonicPtsNs() {
+        long now = SystemClock.elapsedRealtimeNanos();
+        while (true) {
+            long last = lastMonotonicPtsNs.get();
+            long next = Math.max(now, last + 33_333_333L);
+            if (lastMonotonicPtsNs.compareAndSet(last, next)) {
+                return next;
+            }
+        }
+    }
+
+    /**
+     * 纳秒级单调递增 PTS + 严格 RowStride 内存跨距对齐的 Direct YUV 帧注入
+     */
+    public boolean pumpDirectYuvFrame(Surface targetSurface) {
+        if (targetSurface == null || !targetSurface.isValid() || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return false;
+        }
+        MediaCodecYuvDecoder dec = yuvDecoder;
+        if (dec == null) {
+            return false;
+        }
+        MediaCodecYuvDecoder.YuvFrame yuv = dec.acquireLatestFrame();
+        if (yuv == null || yuv.yPlane == null || yuv.uPlane == null || yuv.vPlane == null) {
+            return false;
+        }
+
+        try {
+            ImageWriter writer = imageWriterMap.get(targetSurface);
+            if (writer == null) {
+                writer = ImageWriter.newInstance(targetSurface, 2);
+                imageWriterMap.put(targetSurface, writer);
+            }
+            Image image = writer.dequeueInputImage();
+            if (image == null) {
+                return false;
+            }
+
+            try {
+                copyYuvFrameToImageWithStride(yuv, image);
+                image.setTimestamp(getNextMonotonicPtsNs());
+                writer.queueInputImage(image);
+                return true;
+            } catch (Throwable t) {
+                try { image.close(); } catch (Throwable ignored) {}
+                LogUtil.log("【CS】YUV 跨距对齐写入异常: " + t.getMessage());
+            }
+        } catch (Throwable t) {
+            LogUtil.log("【CS】Direct YUV 泵送异常: " + t.getMessage());
+        }
+        return false;
+    }
+
+    private void copyYuvFrameToImageWithStride(MediaCodecYuvDecoder.YuvFrame yuv, Image image) {
+        Image.Plane[] planes = image.getPlanes();
+        if (planes == null || planes.length < 3) return;
+
+        int width = Math.min(image.getWidth(), yuv.width);
+        int height = Math.min(image.getHeight(), yuv.height);
+
+        // Y 分量严格按 RowStride 对齐写入
+        ByteBuffer yBuf = planes[0].getBuffer();
+        int yRowStride = planes[0].getRowStride();
+        int yPixelStride = planes[0].getPixelStride();
+        byte[] ySrc = yuv.yPlane;
+        yBuf.clear();
+        for (int r = 0; r < height; r++) {
+            yBuf.position(r * yRowStride);
+            int srcOffset = r * yuv.width;
+            if (yPixelStride == 1) {
+                yBuf.put(ySrc, srcOffset, width);
+            } else {
+                for (int c = 0; c < width; c++) {
+                    yBuf.put(r * yRowStride + c * yPixelStride, ySrc[srcOffset + c]);
+                }
+            }
+        }
+
+        // UV 分量严格按 RowStride 对齐写入
+        int uvWidth = width / 2;
+        int uvHeight = height / 2;
+        ByteBuffer uBuf = planes[1].getBuffer();
+        ByteBuffer vBuf = planes[2].getBuffer();
+        int uRowStride = planes[1].getRowStride();
+        int uPixelStride = planes[1].getPixelStride();
+        int vRowStride = planes[2].getRowStride();
+        int vPixelStride = planes[2].getPixelStride();
+        byte[] uSrc = yuv.uPlane;
+        byte[] vSrc = yuv.vPlane;
+        int yuvUvWidth = yuv.width / 2;
+
+        uBuf.clear();
+        vBuf.clear();
+        for (int r = 0; r < uvHeight; r++) {
+            int srcOffset = r * yuvUvWidth;
+            for (int c = 0; c < uvWidth; c++) {
+                uBuf.put(r * uRowStride + c * uPixelStride, uSrc[srcOffset + c]);
+                vBuf.put(r * vRowStride + c * vPixelStride, vSrc[srcOffset + c]);
+            }
+        }
+    }
+
     public void createOrPumpImage(Surface targetSurface) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
             return;
         try {
-            // 仅作为旧路径回退：新的 JPEG 替换逻辑在 acquireNextImage/acquireLatestImage 上完成。
             ImageWriter writer = imageWriterMap.get(targetSurface);
             if (writer == null) {
                 writer = ImageWriter.newInstance(targetSurface, 2);
@@ -2350,6 +2617,7 @@ public final class Camera2SessionHook {
             buffer.clear();
             buffer.put(jpegBytes);
             buffer.flip();
+            image.setTimestamp(getNextMonotonicPtsNs());
             writer.queueInputImage(image);
             LogUtil.log("【CS】成功泵入一张伪造图片 (" + jpegBytes.length + " bytes)");
         } catch (Exception e) {

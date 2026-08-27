@@ -177,6 +177,7 @@ public class HookMain {
         // Initialize Camera Handlers
         new Camera1Handler().init(packageContext);
         new Camera2Handler().init(packageContext);
+        new LineElsaHandler().init(packageContext);
 
         // Initialize Microphone Handler
         new MicrophoneHandler().init(packageContext);
@@ -431,10 +432,11 @@ public class HookMain {
             isYuvReader = imageReader.getImageFormat() == android.graphics.ImageFormat.YUV_420_888;
         } catch (Throwable ignored) {
         }
+        String pkg = camera2Hook.getCurrentPackageName();
+        boolean isLineOrWa = Camera2SessionHook.isWhatsAppPackage(pkg) || Camera2SessionHook.isLinePackage(pkg);
+        boolean shouldInterceptYuv = isYuvReader && isLineOrWa && !camera2Hook.shouldBypassYuvAcquireHook(surface);
 
-        if (!isYuvReader
-                || camera2Hook.shouldBypassYuvAcquireHook(surface)
-                || !camera2Hook.shouldKeepYuvReaderSurfaceForCurrentPackage(surface)) {
+        if (!shouldInterceptYuv) {
             try {
                 result = chain.proceed(args);
             } catch (UnsupportedOperationException e) {
@@ -446,6 +448,9 @@ public class HookMain {
         } else {
             try {
                 result = acquireFakeWhatsAppYuvImage(imageReader, surface, args, originInvoker);
+                if (result == null) {
+                    result = chain.proceed(args);
+                }
             } catch (Throwable t) {
                 LogUtil.log("【CS】YUV ImageReader 兼容处理失败: " + t);
                 result = chain.proceed(args);
@@ -485,13 +490,10 @@ public class HookMain {
             return result;
         }
         try {
-            if (!getConfig().getBoolean(ConfigManager.KEY_ENABLE_PHOTO_FAKE, false)) {
-                return result;
+            Image image = (Image) result;
+            if (image.getFormat() == android.graphics.ImageFormat.JPEG || camera2Hook.isJpegReaderSurface(surface)) {
+                camera2Hook.replaceJpegImageIfNeeded(imageReader, image);
             }
-            if (!camera2Hook.isJpegReaderSurface(surface)) {
-                return result;
-            }
-            camera2Hook.replaceJpegImageIfNeeded(imageReader, (Image) result);
         } catch (Exception e) {
             LogUtil.log("【CS】处理 ImageReader 结果失败: " + e);
         }

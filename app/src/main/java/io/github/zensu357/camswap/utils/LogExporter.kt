@@ -28,8 +28,9 @@ object LogExporter {
 
     // 筛选 CamSwap 关键调试日志的关键词
     private val FILTER_KEYWORDS = arrayOf(
-        "【CS】", "CamSwap", "LSPosed-Bridge", "cs_camserver", "cs-injector",
-        "cs_cam_shm", "virtual.mp4", "cs_config.json", "CameraServerBridge"
+        "【CS】", "CamSwap", "LSPosed-Bridge", "LSPosedFramework", "LSPosed",
+        "cs_camserver", "cs-injector", "cs_cam_shm", "virtual.mp4", "cs_config.json",
+        "CameraServerBridge", "LineMixCamera", "CameraScannerActivity", "CameraDeviceImpl"
     )
 
     data class ExportResult(
@@ -98,11 +99,13 @@ object LogExporter {
                 append(tryExec("ls -la /sdcard/DCIM/Camera1 2>/dev/null", useRoot = hasRoot))
             }.let { LogSanitizer.sanitize(it) ?: "" }
 
-            // 5. 收集 logcat 并过滤 CamSwap 关键日志
+            // 5. 收集 logcat 并过滤 CamSwap 关键日志 (大幅增加行数至 20000 行，并提取 LSPosed 模块专属日志)
             val logcatRaw = if (hasRoot) {
-                tryExec("logcat -d -v time -t 5000 2>/dev/null", useRoot = true)
+                val sysLog = tryExec("logcat -d -v time -t 20000 2>/dev/null", useRoot = true)
+                val lspLog = tryExec("cat /data/adb/lspd/log/modules.log 2>/dev/null | tail -n 5000", useRoot = true)
+                if (lspLog.isNotEmpty()) "$sysLog\n--- LSPosed Module Log ---\n$lspLog" else sysLog
             } else {
-                tryExec("logcat -d -v time -t 2000 2>/dev/null", useRoot = false)
+                tryExec("logcat -d -v time -t 5000 2>/dev/null", useRoot = false)
             }
 
             val sanitizedLogcatSb = StringBuilder()

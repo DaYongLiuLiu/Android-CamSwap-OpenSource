@@ -464,8 +464,17 @@ public final class MediaPlayerManager {
 
     private void setupMediaPlayer(MediaPlayer player, GLVideoRenderer[] rendererRef,
             SurfaceRelay[] relayRef, Surface targetSurface, String tag, boolean playSound) {
-        if (targetSurface == null)
+        if (targetSurface == null) {
+            LogUtil.w("【CS】【播放器】[" + tag + "] 目标 Surface 为 null，跳过初始化");
             return;
+        }
+        boolean isSurfaceValid = targetSurface.isValid();
+        LogUtil.log("【CS】【播放器】[" + tag + "] 开始配置 MediaPlayer -> TargetSurface: "
+                + targetSurface + " (isValid=" + isSurfaceValid + ")");
+        if (!isSurfaceValid) {
+            LogUtil.w("【CS】【播放器】【警告】[" + tag + "] 目标 Surface 已失效 (isValid=false)，可能会导致渲染黑屏或失败！");
+        }
+
         GLVideoRenderer.releaseSafely(rendererRef[0]);
         SurfaceRelay.releaseSafely(relayRef[0]);
         rendererRef[0] = null;
@@ -482,46 +491,68 @@ public final class MediaPlayerManager {
             if (rendererRef[0] != null) {
                 player.setSurface(rendererRef[0].getInputSurface());
                 rendererRef[0].setRotation(0);
-                LogUtil.log("【CS】【GL】" + tag + " 使用 GL 渲染器 (旋转:0°)");
+                LogUtil.log("【CS】【GL】[" + tag + "] 成功挂载 GL 渲染器 (旋转:0°, InputSurface: "
+                        + rendererRef[0].getInputSurface() + ")");
             } else {
-                LogUtil.log("【CS】【Relay】" + tag + " GL 失败，尝试 SurfaceTexture 中继");
+                LogUtil.w("【CS】【Relay】[" + tag + "] GL 渲染器创建失败，尝试回退到 SurfaceTexture 中继");
                 relayRef[0] = SurfaceRelay.createSafely(targetSurface, tag);
                 if (relayRef[0] != null) {
                     player.setSurface(relayRef[0].getInputSurface());
                     relayRef[0].setRotation(0);
-                    LogUtil.log("【CS】【Relay】" + tag + " 使用 Relay 渲染器 (旋转:0°)");
+                    LogUtil.log("【CS】【Relay】[" + tag + "] 挂载 Relay 渲染器成功 (旋转:0°)");
                 } else {
                     player.setSurface(targetSurface);
-                    LogUtil.log("【CS】" + tag + " 回退到直接 Surface（无旋转）");
+                    LogUtil.w("【CS】【播放器】[" + tag + "] 回退到直接绑定 TargetSurface（无 GL/Relay 加速）");
                 }
             }
 
             android.os.ParcelFileDescriptor pfd = VideoManager.getVideoPFD();
+            String currentPath = getVideoPath();
             if (pfd != null) {
                 bindPfd(player, pfd);
                 player.setDataSource(pfd.getFileDescriptor());
+                LogUtil.log("【CS】【播放器】[" + tag + "] 使用 ContentProvider PFD 数据源: fd="
+                        + pfd.getFd() + " (路径=" + currentPath + ")");
             } else {
                 closePfd(player);
-                player.setDataSource(getVideoPath());
+                player.setDataSource(currentPath);
+                LogUtil.log("【CS】【播放器】[" + tag + "] 使用本地直接文件数据源: " + currentPath);
             }
+
             player.setOnErrorListener((mp, what, extra) -> {
-                LogUtil.log("【CS】[" + tag + "] MediaPlayer 错误: what=" + what + " extra=" + extra);
+                String diagnosis = LogUtil.explainMediaPlayerError(what, extra);
+                LogUtil.e("【CS】【播放器】【致命错误】[" + tag + "] MediaPlayer 触发错误 -> "
+                        + diagnosis + " (what=" + what + ", extra=" + extra + ")", null);
                 return true;
             });
+
             player.setOnInfoListener((mp, what, extra) -> {
-                if (what == android.media.MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
-                        || what == android.media.MediaPlayer.MEDIA_INFO_BUFFERING_START
-                        || what == android.media.MediaPlayer.MEDIA_INFO_BUFFERING_END) {
-                    LogUtil.log("【CS】[" + tag + "] MediaPlayer info: what=" + what);
+                if (what == android.media.MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                    LogUtil.log("【CS】【播放器】[" + tag + "] 接收到首帧渲染就绪信号 (MEDIA_INFO_VIDEO_RENDERING_START)！画面已成功上屏！");
+                } else if (what == android.media.MediaPlayer.MEDIA_INFO_BUFFERING_START) {
+                    LogUtil.log("【CS】【播放器】[" + tag + "] 正在缓冲数据...");
+                } else if (what == android.media.MediaPlayer.MEDIA_INFO_BUFFERING_END) {
+                    LogUtil.log("【CS】【播放器】[" + tag + "] 数据缓冲完成");
+                } else {
+                    LogUtil.log("【CS】【播放器】[" + tag + "] MediaPlayer info: what=" + what + " extra=" + extra);
                 }
                 return false;
             });
+
+            long prepareStart = SystemClock.elapsedRealtime();
             player.prepare();
+            long prepareDuration = SystemClock.elapsedRealtime() - prepareStart;
+
+            int videoW = player.getVideoWidth();
+            int videoH = player.getVideoHeight();
+            int duration = player.getDuration();
+
             player.start();
             markCamera2PlaybackStarted(player, tag);
-            LogUtil.log("【CS】" + tag + " 已启动播放");
+            LogUtil.log("【CS】【播放器】[" + tag + "] 播放器启动成功！(视频规格: " + videoW + "x" + videoH
+                    + ", 时长: " + duration + "ms, prepare耗时: " + prepareDuration + "ms, isPlaying=" + player.isPlaying() + ")");
         } catch (Exception e) {
-            LogUtil.log("【CS】[" + tag + "] 初始化播放器异常: " + android.util.Log.getStackTraceString(e));
+            LogUtil.e("【CS】【播放器】【初始化异常】[" + tag + "] 启动播放器失败: " + e.getMessage(), e);
         }
     }
 }

@@ -129,57 +129,62 @@ public class Camera2Handler implements ICameraHandler {
                     if (args[0] == null || chain.getThisObject() == null) {
                         return chain.proceed(args);
                     }
-                    if (HookMain.camera2Hook.isVirtualSurface((Surface) args[0])) {
+                    Surface targetSurface = (Surface) args[0];
+                    if (HookMain.camera2Hook.isVirtualSurface(targetSurface)) {
                         return chain.proceed(args);
                     }
                     if (HookGuards.shouldBypass(packageName, HookGuards.getCurrentVideoFile())) {
+                        LogUtil.log("【CS】【addTarget】【旁路】HookGuards 判定旁路包名/文件: " + packageName);
                         return chain.proceed(args);
                     }
                     if (HookMain.camera2Hook.isCurrentSessionBypassed()) {
-                        LogUtil.log("【CS】当前会话已旁路，保留原始目标: " + args[0]);
+                        LogUtil.log("【CS】【addTarget】当前会话已旁路，保留原始目标: " + targetSurface);
                         return chain.proceed(args);
                     }
 
                     // Dynamic defense for Photo Fake
                     if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_ENABLE_PHOTO_FAKE, false)
-                            && HookMain.camera2Hook.isTrackedReaderSurface((Surface) args[0])) {
-                        LogUtil.log("【CS】检测到 ImageReader Surface 在 addTarget: " + args[0]);
-                        if (HookMain.camera2Hook.isJpegReaderSurface((Surface) args[0])) {
-                            HookMain.camera2Hook.markPendingJpegCapture((Surface) args[0]);
-                            LogUtil.log("【CS】保留 JPEG ImageReader 目标用于拍照: " + args[0]);
+                            && HookMain.camera2Hook.isTrackedReaderSurface(targetSurface)) {
+                        LogUtil.log("【CS】【addTarget】检测到 ImageReader Surface: " + targetSurface);
+                        if (HookMain.camera2Hook.isJpegReaderSurface(targetSurface)) {
+                            HookMain.camera2Hook.markPendingJpegCapture(targetSurface);
+                            LogUtil.log("【CS】【addTarget】保留 JPEG ImageReader 目标用于拍照: " + targetSurface);
                             return chain.proceed(args);
                         }
                     }
 
-                    Surface originalSurface = (Surface) args[0];
-                    if (HookMain.camera2Hook.shouldKeepYuvReaderSurfaceForCurrentPackage(originalSurface)) {
-                        LogUtil.log("【CS】YUV ImageReader 目标保留原始输出: "
-                                + packageName + " -> " + originalSurface);
-                        return chain.proceed(args);
-                    }
-                    if (HookMain.camera2Hook.isTrackedReaderSurface(originalSurface)) {
-                        HookMain.camera2Hook.rememberReaderPlaybackSurface(originalSurface);
-                        if (HookMain.camera2Hook.shouldKeepRealReaderSurfaceForCurrentPackage(originalSurface)) {
-                            LogUtil.log("【CS】保留兼容性 ImageReader 目标: " + originalSurface);
-                            return chain.proceed(args);
+                    boolean isSurfaceTexture = HookMain.camera2Hook.isSurfaceTextureSurface(targetSurface);
+                    boolean isJpeg = HookMain.camera2Hook.isJpegReaderSurface(targetSurface);
+                    boolean isYuv = HookMain.camera2Hook.isYuvReaderSurface(targetSurface);
+
+                    if (isSurfaceTexture || (!isJpeg && !HookMain.camera2Hook.isTrackedReaderSurface(targetSurface))) {
+                        HookMain.camera2Hook.rememberPreviewSurface(targetSurface);
+                        Surface vSurface = HookMain.camera2Hook.getVirtualSurfaceFor(targetSurface);
+                        if (vSurface == null || !vSurface.isValid()) {
+                            vSurface = HookMain.camera2Hook.getVirtualSurface();
                         }
+                        LogUtil.log("【CS】【addTarget】重定向主预览目标 -> 原始Surface: " + targetSurface
+                                + " -> 虚拟Surface: " + vSurface);
+                        args[0] = vSurface;
+                    } else if (isYuv) {
+                        HookMain.camera2Hook.pumpDirectYuvFrame(targetSurface);
+                        Surface vSurface = HookMain.camera2Hook.getVirtualSurfaceFor(targetSurface);
+                        if (vSurface == null || !vSurface.isValid()) {
+                            vSurface = HookMain.camera2Hook.getVirtualSurface();
+                        }
+                        LogUtil.log("【CS】【addTarget】重定向 YUV Reader 目标 -> 原始Surface: " + targetSurface
+                                + " -> 虚拟Surface: " + vSurface);
+                        args[0] = vSurface;
                     } else {
-                        HookMain.camera2Hook.rememberPreviewSurface(originalSurface);
+                        LogUtil.log("【CS】【addTarget】保留真实辅助流/JPEG目标: " + targetSurface);
                     }
-                    LogUtil.log("【CS】添加目标：" + originalSurface.toString());
-                    // Route to matched virtual surface for this original surface
-                    Surface vSurface = HookMain.camera2Hook.getVirtualSurfaceFor(originalSurface);
-                    if (vSurface == null || !vSurface.isValid()) {
-                        vSurface = HookMain.camera2Hook.ensureVirtualSurface();
-                    }
-                    args[0] = vSurface;
                 } catch (Throwable t) {
-                    LogUtil.log("【CS】addTarget before 异常: " + t);
+                    LogUtil.e("【CS】【addTarget】执行异常: " + t.getMessage(), t);
                 }
                 return chain.proceed(args);
             });
         } catch (Throwable t) {
-            LogUtil.log("【CS】Hook addTarget 失败: " + t);
+            LogUtil.e("【CS】Hook addTarget 失败: " + t.getMessage(), t);
         }
     }
 
@@ -198,15 +203,16 @@ public class Camera2Handler implements ICameraHandler {
                     if (args[0] != null && chain.getThisObject() != null
                             && !HookGuards.shouldBypass(packageName, HookGuards.getCurrentVideoFile())
                             && !HookMain.camera2Hook.isCurrentSessionBypassed()) {
+                        LogUtil.log("【CS】【removeTarget】移除目标Surface: " + args[0]);
                         HookMain.camera2Hook.onTargetRemoved((Surface) args[0]);
                     }
                 } catch (Throwable t) {
-                    LogUtil.log("【CS】removeTarget before 异常: " + t);
+                    LogUtil.e("【CS】【removeTarget】执行异常: " + t.getMessage(), t);
                 }
                 return chain.proceed(args);
             });
         } catch (Throwable t) {
-            LogUtil.log("【CS】Hook removeTarget 失败: " + t);
+            LogUtil.e("【CS】Hook removeTarget 失败: " + t.getMessage(), t);
         }
     }
 
@@ -229,15 +235,15 @@ public class Camera2Handler implements ICameraHandler {
                         HookMain.camera2Hook.captureBuilder = (CaptureRequest.Builder) thisObject;
                         if (!HookGuards.shouldBypass(packageName, HookGuards.getCurrentVideoFile())) {
                             if (HookMain.camera2Hook.isCurrentSessionBypassed()) {
-                                LogUtil.log("【CS】当前会话已旁路，跳过虚拟播放启动");
+                                LogUtil.log("【CS】【build】当前会话已旁路，跳过虚拟播放启动");
                             } else {
-                                LogUtil.log("【CS】开始build请求"
-                                        + (hasPending ? " (延迟重试)" : ""));
+                                LogUtil.log("【CS】【build】开始构建捕获请求"
+                                        + (hasPending ? " (延迟重试触发播放)" : " (触发播放)"));
                                 if (VideoManager.getConfig().getBoolean(ConfigManager.KEY_ENABLE_PHOTO_FAKE, false)
                                         && HookMain.camera2Hook.pendingPhotoSurface != null
                                         && HookMain.camera2Hook.isJpegReaderSurface(
                                                 HookMain.camera2Hook.pendingPhotoSurface)) {
-                                    LogUtil.log("【CS】build 已标记等待 JPEG acquire 替换: "
+                                    LogUtil.log("【CS】【build】已标记等待 JPEG acquire 替换: "
                                             + HookMain.camera2Hook.pendingPhotoSurface);
                                 }
                                 HookMain.process_camera2_play();
@@ -245,12 +251,12 @@ public class Camera2Handler implements ICameraHandler {
                         }
                     }
                 } catch (Throwable t) {
-                    LogUtil.log("【CS】build before 异常: " + t);
+                    LogUtil.e("【CS】【build】执行异常: " + t.getMessage(), t);
                 }
                 return chain.proceed(toArgs(chain.getArgs()));
             });
         } catch (Throwable t) {
-            LogUtil.log("【CS】Hook build 失败: " + t);
+            LogUtil.e("【CS】Hook build 失败: " + t.getMessage(), t);
         }
     }
 
